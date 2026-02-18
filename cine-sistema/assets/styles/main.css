@@ -1,0 +1,517 @@
+/* ===============================
+   Base
+=============================== */
+:root{
+  --bg: #0b0f14;
+  --panel: #0f1623;
+  --panel2: #121c2b;
+  --stroke: rgba(255,255,255,.08);
+  --text: rgba(255,255,255,.92);
+  --muted: rgba(255,255,255,.6);
+  --muted2: rgba(255,255,255,.45);
+  --primary: #4f7cff;
+  --danger: #e05555;
+  --ok: #38c172;
+  --warn: #f4b740;
+  --shadow: 0 20px 60px rgba(0,0,0,.55);
+  --r: 18px;
+  --r2: 14px;
+  --pad: 18px;
+  --max: 1100px;
+  --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, "Apple Color Emoji","Segoe UI Emoji";
+}
+
+*{ box-sizing:border-box; }
+html, body{ height:100%; }
+body{
+  margin:0;
+  font-family: var(--font);
+  background: radial-gradient(1200px 700px at 50% -200px, rgba(79,124,255,.25), transparent 60%),
+              radial-gradient(1000px 600px at 80% 10%, rgba(90,250,200,.08), transparent 55%),
+              var(--bg);
+  color: var(--text);
+}
+
+a{ color: inherit; text-decoration: none; }
+
+.container{
+  width: min(var(--max), calc(100% - 40px));
+  margin: 0 auto;
+}
+
+.mt{ margin-top: 18px; }
+
+/* ===============================
+   Navbar / Top
+=============================== */
+.topbar{
+  position: sticky;
+  top:0;
+  z-index: 20;
+  background: rgba(11,15,20,.55);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.tabs{
+  width: min(var(--max), calc(100% - 40px));
+  margin: 0 auto;
+  display:flex;
+  gap: 26px;
+  padding: 14px 0;
+}
+.tab{
+  color: rgba(255,255,255,.65);
+  font-size: 14px;
+}
+.tab:hover{ color: rgba(255,255,255,.9); }
+.tab.active{
+  color: rgba(255,255,255,.95);
+  position: relative;
+}
+.tab.active::after{
+  content:"";
+  position:absolute;
+  left:0; right:0;
+  bottom:-14px;
+  height:2px;
+  background: rgba(79,124,255,.9);
+  border-radius: 2px;
+}
+
+/* ===============================
+   Cards / layout
+=============================== */
+.card{
+  background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  padding: 22px;
+}
+
+.topbar-card{
+  display:flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 18px;
+  padding: 18px 20px;
+}
+
+.grid{
+  display:grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 920px){
+  .grid{ grid-template-columns: 1fr; }
+}
+
+h2{
+  margin: 0 0 10px 0;
+  font-size: 22px;
+  letter-spacing: .2px;
+}
+h3{
+  margin: 0 0 10px 0;
+  font-size: 18px;
+}
+
+.small{ font-size: 12px; color: var(--muted2); }
+.muted{ color: var(--muted); }
+.hr{
+  border:0;
+  height:1px;
+  background: rgba(255,255,255,.08);
+  margin: 14px 0;
+}
+
+/* ===============================
+   Buttons
+=============================== */
+.btn{
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+  color: rgba(255,255,255,.9);
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:hover{ background: rgba(255,255,255,.06); }
+.btn:disabled{
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.btn-primary{
+  background: rgba(79,124,255,.15);
+  border-color: rgba(79,124,255,.35);
+}
+.btn-primary:hover{ background: rgba(79,124,255,.22); }
+
+.btn-danger{
+  background: rgba(224,85,85,.14);
+  border-color: rgba(224,85,85,.35);
+}
+.btn-danger:hover{ background: rgba(224,85,85,.22); }
+
+.btn-ghost{
+  background: transparent;
+  border-color: rgba(255,255,255,.12);
+}
+
+/* ===============================
+   Tables
+=============================== */
+.table-wrap{
+  overflow:auto;
+  border-radius: var(--r2);
+  border: 1px solid rgba(255,255,255,.07);
+  background: rgba(255,255,255,.02);
+}
+.table{
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 780px;
+}
+.table thead th{
+  font-size: 12px;
+  color: rgba(255,255,255,.7);
+  text-align:left;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.02);
+}
+.table tbody td{
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  font-size: 13px;
+}
+.table tbody tr:hover{
+  background: rgba(255,255,255,.03);
+}
+.table tbody tr.is-selected{
+  outline: 2px solid rgba(79,124,255,.55);
+  outline-offset: -2px;
+  background: rgba(79,124,255,.08);
+}
+
+/* ===============================
+   Forms (inputs/selects)
+=============================== */
+label{ display:block; }
+input, select, textarea{
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(0,0,0,.22);
+  color: rgba(255,255,255,.92);
+  outline: none;
+}
+input:focus, select:focus, textarea:focus{
+  border-color: rgba(79,124,255,.5);
+  box-shadow: 0 0 0 3px rgba(79,124,255,.15);
+}
+
+/* ✅ FIX: dropdown en oscuro (Chrome/Edge suele respetar esto) */
+select{
+  color-scheme: dark;
+}
+select option{
+  background: #0f1623;
+  color: rgba(255,255,255,.92);
+}
+
+/* file input */
+input[type="file"]{
+  padding: 10px;
+}
+.file-meta{
+  display:flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(255,255,255,.65);
+}
+.file-pill{
+  display:inline-flex;
+  align-items:center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+}
+.file-pill b{ font-weight: 700; }
+.file-remove{
+  border:0;
+  background: transparent;
+  color: rgba(255,255,255,.7);
+  cursor:pointer;
+}
+.file-remove:hover{ color: rgba(255,255,255,.95); }
+
+/* ===============================
+   Modal
+=============================== */
+.modal-backdrop{
+  position: fixed;
+  inset: 0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background: rgba(0,0,0,.55);
+  backdrop-filter: blur(4px);
+  z-index: 50;
+  padding: 20px;
+}
+.modal{
+  width: min(720px, 100%);
+  border-radius: var(--r);
+  border: 1px solid rgba(255,255,255,.10);
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.03));
+  box-shadow: var(--shadow);
+  overflow:hidden;
+}
+.modal-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding: 18px 18px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.modal-close{
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+  color: rgba(255,255,255,.85);
+  cursor:pointer;
+}
+.modal-close:hover{ background: rgba(255,255,255,.06); }
+
+.modal-body{ padding: 18px; }
+.modal-footer{
+  padding: 16px 18px;
+  border-top: 1px solid rgba(255,255,255,.08);
+  display:flex;
+  justify-content:flex-end;
+  gap: 10px;
+}
+
+.form-grid{
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.form-grid label span{
+  display:block;
+  font-size: 12px;
+  color: rgba(255,255,255,.65);
+  margin-bottom: 6px;
+}
+@media (max-width: 720px){
+  .form-grid{ grid-template-columns: 1fr; }
+}
+
+/* ===============================
+   Login
+=============================== */
+.login-wrap{
+  min-height: 100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding: 24px;
+}
+.login-card{
+  width: min(420px, 100%);
+  border-radius: var(--r);
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+  box-shadow: var(--shadow);
+  padding: 22px;
+}
+.login-card h2{ margin-bottom: 6px; }
+.login-card label{ margin-top: 12px; margin-bottom: 6px; font-size: 12px; color: rgba(255,255,255,.65); }
+.login-card button{ width:100%; margin-top: 14px; }
+.error{
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(224,85,85,.35);
+  background: rgba(224,85,85,.10);
+  color: rgba(255,255,255,.95);
+  font-size: 13px;
+}
+/* =========================
+   Ruta Crítica (V1) styles
+========================= */
+
+.grid-rc{
+  grid-template-columns: 1.6fr 1fr;
+  gap: 18px;
+}
+
+@media (max-width: 980px){
+  .grid-rc{ grid-template-columns: 1fr; }
+}
+
+.rc-header{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+}
+
+.rc-header-actions{
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+}
+
+.rc-error{
+  margin-top:10px;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,0.08);
+  background: rgba(255, 80, 80, 0.10);
+  color: rgba(255,255,255,0.9);
+}
+
+.rc-stages{
+  margin-top:14px;
+  display:grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap:12px;
+}
+
+@media (max-width: 980px){
+  .rc-stages{ grid-template-columns: 1fr; }
+}
+
+.rc-stage-card{
+  border-radius:16px;
+  border:1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.03);
+  padding:12px;
+}
+
+.rc-stage-card.is-active{
+  outline: 2px solid rgba(90, 140, 255, 0.35);
+}
+
+.rc-stage-top{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:10px;
+}
+
+.rc-stage-name{
+  font-weight:700;
+}
+
+.rc-stage-dates{
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap:10px;
+}
+
+.rc-stage-dates label span{
+  display:block;
+  font-size:12px;
+  opacity:0.8;
+  margin-bottom:6px;
+}
+
+.rc-stage-meta{
+  margin-top:10px;
+}
+
+.rc-subtitle{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+
+.rc-sub-actions{
+  display:flex;
+  gap:10px;
+}
+
+.rc-right-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:10px;
+}
+
+.rc-right-actions{
+  display:flex;
+  justify-content:flex-end;
+  gap:10px;
+  margin-top:12px;
+}
+
+/* Botón pequeño */
+.btn-xs{
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+/* --------- Dropdown legibilidad ---------
+   Nota: <option> es limitado por el sistema operativo,
+   pero esto mejora MUCHÍSIMO en Chrome/Edge.
+---------------------------------------- */
+select,
+option{
+  color: rgba(255,255,255,0.92);
+}
+
+select{
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+}
+
+select:focus{
+  outline: none;
+  border-color: rgba(90,140,255,0.50);
+  box-shadow: 0 0 0 3px rgba(90,140,255,0.18);
+}
+
+/* Algunos browsers ignoran esto, pero vale la pena */
+select option{
+  background: #141922;
+  color: rgba(255,255,255,0.92);
+}
+/* Ruta Crítica: warning amarillo en fecha */
+.rc-warn {
+  background: rgba(255, 230, 120, 0.55) !important;
+  border-color: rgba(255, 230, 120, 0.9) !important;
+  box-shadow: 0 0 0 2px rgba(255, 230, 120, 0.25);
+}
+@media print {
+  #btnExport { display:none !important; }
+  .topbar { display:none !important; }
+  .wrapper { overflow: visible !important; padding: 0 !important; }
+
+  /* IMPORTANT: desactivar sticky en impresión */
+  .col-tarea{
+    position: static !important;
+    left: auto !important;
+  }
+
+  /* NO usar transform en print */
+  .print-surface{
+    transform: none !important;
+  }
+}

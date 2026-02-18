@@ -26,6 +26,10 @@
         * Sin columnas COT/CARTA
         * Sin inputs de archivo
         * Sin campos cot/carta en datos, CSV ni carga masiva
+
+   ✅ FIX QUIRÚRGICO (IMPORTANTE):
+      - Guardado server: ahora esperamos el guardado en acciones clave
+        (crear/editar/eliminar/carga masiva) para que al refrescar NO se pierda.
 ========================================================= */
 
 import { exportarPresupuestoPDF } from "../services/presupuestoPdfExport.js";
@@ -338,24 +342,23 @@ export async function bindPresupuestoEvents() {
   const bulkTbody = document.getElementById("bgBulkTbody");
 
   const userId = window?.appState?.user?.uid;
-const projectId = window?.appState?.profile?.projectId;
-if (!userId || !projectId) throw new Error("Sesión/proyecto no inicializado para Presupuesto.");
+  const projectId = window?.appState?.profile?.projectId;
+  if (!userId || !projectId) throw new Error("Sesión/proyecto no inicializado para Presupuesto.");
 
-const MODULE_KEY = "presupuesto";
+  const MODULE_KEY = "presupuesto";
 
-// ✅ estado server
-let seq = 0;
-let items = [];
+  // ✅ estado server
+  let seq = 0;
+  let items = [];
 
-try {
-  const serverState = await loadModuleState({ userId, projectId, moduleKey: MODULE_KEY });
-  items = Array.isArray(serverState?.items) ? serverState.items : [];
-  seq = Number.isFinite(Number(serverState?.seq)) ? Number(serverState.seq) : 0;
-} catch (e) {
-  // si falla, mejor tronar con mensaje claro (sin fallback local)
-  throw new Error(`No pude cargar Presupuesto desde servidor: ${e?.message || String(e)}`);
-}
-
+  try {
+    const serverState = await loadModuleState({ userId, projectId, moduleKey: MODULE_KEY });
+    items = Array.isArray(serverState?.items) ? serverState.items : [];
+    seq = Number.isFinite(Number(serverState?.seq)) ? Number(serverState.seq) : 0;
+  } catch (e) {
+    // si falla, mejor tronar con mensaje claro (sin fallback local)
+    throw new Error(`No pude cargar Presupuesto desde servidor: ${e?.message || String(e)}`);
+  }
 
   // ✅ selección múltiple
   let selectedUids = new Set(); // uids seleccionados
@@ -409,26 +412,30 @@ try {
   inpPlazo.addEventListener("blur", () => clampInput(inpPlazo, 1, true));
 
   /* =======================
-     Persistencia
+     Persistencia (SERVER)
+     ✅ FIX: cola async + await en acciones clave
   ======================= */
-function saveItems() {
-  // 🔒 server-only: guardamos TODO el módulo
-  // No hacemos await para no reventar toda la UI por latencia,
-  // pero sí dejamos el error en consola.
-  saveModuleState({
-    userId,
-    projectId,
-    moduleKey: MODULE_KEY,
-    data: { seq, items },
-  }).catch((e) => console.error("[presupuesto] saveModuleState failed:", e));
-}
+  let saveInFlight = Promise.resolve();
 
-function getNextSeq() {
-  seq = (Number.isFinite(seq) ? seq : 0) + 1;
-  saveItems();
-  return seq;
-}
+  function saveItemsAsync() {
+    saveInFlight = saveInFlight
+      .catch(() => {}) // no romper cadena si falló antes
+      .then(() =>
+        saveModuleState({
+          userId,
+          projectId,
+          moduleKey: MODULE_KEY,
+          data: { seq, items },
+        })
+      );
 
+    return saveInFlight;
+  }
+
+  function getNextSeqLocal() {
+    seq = (Number.isFinite(seq) ? seq : 0) + 1;
+    return seq;
+  }
 
   function mkUid() {
     return crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now());
@@ -534,7 +541,9 @@ function getNextSeq() {
     selectedUids = new Set([...selectedUids].filter((u) => valid.has(u)));
     if (lastClickedUid && !valid.has(lastClickedUid)) lastClickedUid = null;
 
-    saveItems();
+    // Guardado “de fondo” (sin await) para mantener consistencia
+    saveItemsAsync().catch((e) => console.error("[presupuesto] saveModuleState failed:", e));
+
     renderSummary();
     renderTable();
     syncButtons();
@@ -792,7 +801,7 @@ function getNextSeq() {
     return null;
   }
 
-  function saveModal() {
+  async function saveModal() {
     clampInput(inpMonto, 0.01, false);
     clampInput(inpCantidad, 1, true);
     clampInput(inpPlazo, 1, true);
@@ -829,7 +838,7 @@ function getNextSeq() {
     if (modalMode === "create") {
       const item = normalizeItem({
         uid: mkUid(),
-        folio: getNextSeq(),
+        folio: getNextSeqLocal(),
         etapa,
         concepto: inpConcepto.value.trim(),
         cuenta,
@@ -845,7 +854,10 @@ function getNextSeq() {
       });
 
       items.push(item);
-      saveItems();
+
+      // ✅ IMPORTANT: esperar guardado antes de render / cerrar
+      await saveItemsAsync();
+
       renderAll();
 
       // ✅ seleccionar solo el nuevo
@@ -882,7 +894,9 @@ function getNextSeq() {
       updatedAt: Date.now(),
     });
 
-    saveItems();
+    // ✅ esperar guardado
+    await saveItemsAsync();
+
     renderAll();
 
     selectedUids = new Set([items[idx].uid]);
@@ -893,7 +907,7 @@ function getNextSeq() {
     closeModal();
   }
 
-  function deleteSelected() {
+  async function deleteSelected() {
     const n = selectedUids.size;
     if (n === 0) return;
 
@@ -906,7 +920,10 @@ function getNextSeq() {
       items = items.filter((x) => x.uid !== uid);
       selectedUids.clear();
       lastClickedUid = null;
-      saveItems();
+
+      // ✅ esperar guardado
+      await saveItemsAsync();
+
       renderAll();
       return;
     }
@@ -920,7 +937,9 @@ function getNextSeq() {
     selectedUids.clear();
     lastClickedUid = null;
 
-    saveItems();
+    // ✅ esperar guardado
+    await saveItemsAsync();
+
     renderAll();
   }
 
@@ -995,17 +1014,27 @@ function getNextSeq() {
     bulkCommit.textContent = `Agregar ${bulkParsed.length} gastos`;
   }
 
-  function commitBulk() {
+  async function commitBulk() {
     if (!bulkParsed.length) return;
 
-    const withSeq = bulkParsed.map((it) => normalizeItem({
-      uid: mkUid(),
-      folio: getNextSeq(),
-      ...it,
-    }));
+    // ✅ asignar folios una sola vez y guardar una sola vez
+    const start = Number.isFinite(seq) ? seq : 0;
+
+    const withSeq = bulkParsed.map((it, i) =>
+      normalizeItem({
+        uid: mkUid(),
+        folio: start + (i + 1),
+        ...it,
+      })
+    );
+
+    seq = start + withSeq.length;
 
     items.push(...withSeq);
-    saveItems();
+
+    // ✅ esperar guardado
+    await saveItemsAsync();
+
     renderAll();
     closeBulkModal();
   }

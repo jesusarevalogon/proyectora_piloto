@@ -27,9 +27,8 @@
         * Sin inputs de archivo
         * Sin campos cot/carta en datos, CSV ni carga masiva
 
-   ✅ FIX QUIRÚRGICO (IMPORTANTE):
-      - Guardado server: ahora esperamos el guardado en acciones clave
-        (crear/editar/eliminar/carga masiva) para que al refrescar NO se pierda.
+   ✅ FIX QUIRÚRGICO:
+      - Evitar crash: saveInFlight debe existir ANTES del primer renderAll()
 ========================================================= */
 
 import { exportarPresupuestoPDF } from "../services/presupuestoPdfExport.js";
@@ -356,13 +355,42 @@ export async function bindPresupuestoEvents() {
     items = Array.isArray(serverState?.items) ? serverState.items : [];
     seq = Number.isFinite(Number(serverState?.seq)) ? Number(serverState.seq) : 0;
   } catch (e) {
-    // si falla, mejor tronar con mensaje claro (sin fallback local)
     throw new Error(`No pude cargar Presupuesto desde servidor: ${e?.message || String(e)}`);
   }
 
+  /* =========================================================
+     ✅ FIX QUIRÚRGICO:
+     Declarar saveInFlight ANTES del primer renderAll()
+  ========================================================= */
+  let saveInFlight = Promise.resolve();
+
+  function saveItemsAsync() {
+    saveInFlight = saveInFlight
+      .catch(() => {})
+      .then(() =>
+        saveModuleState({
+          userId,
+          projectId,
+          moduleKey: MODULE_KEY,
+          data: { seq, items },
+        })
+      );
+
+    return saveInFlight;
+  }
+
+  function getNextSeqLocal() {
+    seq = (Number.isFinite(seq) ? seq : 0) + 1;
+    return seq;
+  }
+
+  function mkUid() {
+    return crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now());
+  }
+
   // ✅ selección múltiple
-  let selectedUids = new Set(); // uids seleccionados
-  let lastClickedUid = null;    // para Shift+click
+  let selectedUids = new Set();
+  let lastClickedUid = null;
 
   let modalMode = "create";
 
@@ -377,10 +405,6 @@ export async function bindPresupuestoEvents() {
   btnEliminar.addEventListener("click", deleteSelected);
   btnDescargar.addEventListener("click", downloadCSV);
 
-  /* =========================================================
-     ✅ CAMBIO QUIRÚRGICO:
-     Botón VISTA PREVIA usa el puente global (Documentación)
-  ========================================================= */
   btnExportarPDF.addEventListener("click", () => {
     try { window.openPresupuestoPreview(); }
     catch (e) {
@@ -406,44 +430,10 @@ export async function bindPresupuestoEvents() {
   selEntidad.addEventListener("change", applyEntidadRulesToModal);
   selTipoPago.addEventListener("change", applyTipoPagoRulesToModal);
 
-  // Candados
   inpMonto.addEventListener("blur", () => clampInput(inpMonto, 0.01, false));
   inpCantidad.addEventListener("blur", () => clampInput(inpCantidad, 1, true));
   inpPlazo.addEventListener("blur", () => clampInput(inpPlazo, 1, true));
 
-  /* =======================
-     Persistencia (SERVER)
-     ✅ FIX: cola async + await en acciones clave
-  ======================= */
-  let saveInFlight = Promise.resolve();
-
-  function saveItemsAsync() {
-    saveInFlight = saveInFlight
-      .catch(() => {}) // no romper cadena si falló antes
-      .then(() =>
-        saveModuleState({
-          userId,
-          projectId,
-          moduleKey: MODULE_KEY,
-          data: { seq, items },
-        })
-      );
-
-    return saveInFlight;
-  }
-
-  function getNextSeqLocal() {
-    seq = (Number.isFinite(seq) ? seq : 0) + 1;
-    return seq;
-  }
-
-  function mkUid() {
-    return crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now());
-  }
-
-  /* =======================
-     Normalización y reglas
-  ======================= */
   function normalizeEtapa(v) {
     const s = norm(v);
     if (s === "PREPRODUCCION" || s === "PRE PRODUCCION") return "PREPRODUCCIÓN";
@@ -507,7 +497,7 @@ export async function bindPresupuestoEvents() {
 
     return {
       uid: it.uid || mkUid(),
-      folio: it.folio ?? null, // consecutivo oculto
+      folio: it.folio ?? null,
       etapa: it.etapa,
       concepto: (it.concepto || "").trim(),
       cuenta: it.cuenta,
@@ -536,12 +526,10 @@ export async function bindPresupuestoEvents() {
       return normalizeItem({ ...x, etapa, entidad, tipoPago, cuenta, formaPago: forma });
     });
 
-    // ✅ Limpiar selección de UIDs que ya no existan
     const valid = new Set(items.map((x) => x.uid));
     selectedUids = new Set([...selectedUids].filter((u) => valid.has(u)));
     if (lastClickedUid && !valid.has(lastClickedUid)) lastClickedUid = null;
 
-    // Guardado “de fondo” (sin await) para mantener consistencia
     saveItemsAsync().catch((e) => console.error("[presupuesto] saveModuleState failed:", e));
 
     renderSummary();
@@ -627,7 +615,6 @@ export async function bindPresupuestoEvents() {
         <td><b>${money(it.total)}</b></td>
       `;
 
-      // ✅ Click con modificadores
       tr.addEventListener("click", (ev) => onRowClick(ev, it.uid));
       tbody.appendChild(tr);
     });
@@ -636,17 +623,15 @@ export async function bindPresupuestoEvents() {
   }
 
   function onRowClick(ev, uid) {
-    const isToggle = ev.ctrlKey || ev.metaKey; // Ctrl (Win) / Cmd (Mac)
+    const isToggle = ev.ctrlKey || ev.metaKey;
     const isRange = ev.shiftKey;
 
     if (isRange && lastClickedUid) {
-      // Shift + click => rango
       selectRange(lastClickedUid, uid);
       return;
     }
 
     if (isToggle) {
-      // Toggle del UID
       if (selectedUids.has(uid)) selectedUids.delete(uid);
       else selectedUids.add(uid);
       lastClickedUid = uid;
@@ -655,7 +640,6 @@ export async function bindPresupuestoEvents() {
       return;
     }
 
-    // Click normal => solo ese
     selectedUids = new Set([uid]);
     lastClickedUid = uid;
     paintSelection();
@@ -677,7 +661,6 @@ export async function bindPresupuestoEvents() {
     const [start, end] = a < b ? [a, b] : [b, a];
     const range = rowUids.slice(start, end + 1);
 
-    // Shift selecciona rango (reemplaza selección, comportamiento estándar)
     selectedUids = new Set(range);
     lastClickedUid = toUid;
 
@@ -728,9 +711,6 @@ export async function bindPresupuestoEvents() {
     inputEl.value = integerOnly ? String(parseInt(n, 10)) : String(round2(n));
   }
 
-  /* =======================
-     Modal Crear/Editar
-  ======================= */
   function openModal(mode) {
     modalMode = mode;
     validationMsg.style.display = "none";
@@ -750,7 +730,6 @@ export async function bindPresupuestoEvents() {
       applyEntidadRulesToModal();
       applyTipoPagoRulesToModal();
     } else {
-      // ✅ Editar => solo si hay 1 seleccionado
       if (selectedUids.size !== 1) return;
       const onlyUid = [...selectedUids][0];
 
@@ -854,13 +833,9 @@ export async function bindPresupuestoEvents() {
       });
 
       items.push(item);
-
-      // ✅ IMPORTANT: esperar guardado antes de render / cerrar
       await saveItemsAsync();
-
       renderAll();
 
-      // ✅ seleccionar solo el nuevo
       selectedUids = new Set([item.uid]);
       lastClickedUid = item.uid;
       paintSelection();
@@ -870,7 +845,6 @@ export async function bindPresupuestoEvents() {
       return;
     }
 
-    // ✅ Editar => solo si hay 1
     if (selectedUids.size !== 1) return;
     const onlyUid = [...selectedUids][0];
 
@@ -894,9 +868,7 @@ export async function bindPresupuestoEvents() {
       updatedAt: Date.now(),
     });
 
-    // ✅ esperar guardado
     await saveItemsAsync();
-
     renderAll();
 
     selectedUids = new Set([items[idx].uid]);
@@ -921,14 +893,11 @@ export async function bindPresupuestoEvents() {
       selectedUids.clear();
       lastClickedUid = null;
 
-      // ✅ esperar guardado
       await saveItemsAsync();
-
       renderAll();
       return;
     }
 
-    // ✅ varios
     const ok = confirm(`¿Eliminar ${n} gastos seleccionados?`);
     if (!ok) return;
 
@@ -937,15 +906,10 @@ export async function bindPresupuestoEvents() {
     selectedUids.clear();
     lastClickedUid = null;
 
-    // ✅ esperar guardado
     await saveItemsAsync();
-
     renderAll();
   }
 
-  /* =======================
-     CSV
-  ======================= */
   function csvEscape(v) {
     const s = (v ?? "").toString();
     if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
@@ -971,9 +935,6 @@ export async function bindPresupuestoEvents() {
     URL.revokeObjectURL(url);
   }
 
-  /* =======================
-     CARGA MASIVA
-  ======================= */
   function openBulkModal() {
     bulkParsed = [];
     bulkTbody.innerHTML = "";
@@ -1017,7 +978,6 @@ export async function bindPresupuestoEvents() {
   async function commitBulk() {
     if (!bulkParsed.length) return;
 
-    // ✅ asignar folios una sola vez y guardar una sola vez
     const start = Number.isFinite(seq) ? seq : 0;
 
     const withSeq = bulkParsed.map((it, i) =>
@@ -1032,7 +992,6 @@ export async function bindPresupuestoEvents() {
 
     items.push(...withSeq);
 
-    // ✅ esperar guardado
     await saveItemsAsync();
 
     renderAll();
@@ -1086,8 +1045,6 @@ export async function bindPresupuestoEvents() {
     const hasHeader = header.includes("ETAPA") || header.includes("CONCEPTO");
     const start = hasHeader ? 1 : 0;
 
-    // 9 cols:
-    // 0 ETAPA | 1 CONCEPTO | 2 CUENTA | 3 ENTIDAD | 4 FORMA_PAGO | 5 TIPO_PAGO | 6 MONTO | 7 CANTIDAD | 8 PLAZO
     const errors = [];
     const itemsOut = [];
 
@@ -1118,7 +1075,6 @@ export async function bindPresupuestoEvents() {
       if (!entidad) errors.push(`Fila ${rowNum}: ENTIDAD inválida "${r[3]}".`);
       if (!tipoPago) errors.push(`Fila ${rowNum}: TIPO_PAGO inválido "${r[5]}".`);
 
-      // Forma:
       if (entidad === "INTERNO" || entidad === "TERCEROS") {
         if (!formaRaw) errors.push(`Fila ${rowNum}: FORMA_PAGO inválida "${r[4]}". Usa EFECTIVO o ESPECIE.`);
       }
@@ -1127,11 +1083,9 @@ export async function bindPresupuestoEvents() {
       if (!Number.isFinite(cantidad) || cantidad < 1) errors.push(`Fila ${rowNum}: CANTIDAD debe ser >= 1.`);
       if (!Number.isFinite(plazo) || plazo < 1) errors.push(`Fila ${rowNum}: PLAZO debe ser >= 1.`);
 
-      // aplicar reglas:
       const formaPago = applyFormaRules(entidad, formaRaw || "EFECTIVO");
       const fixedPlazo = (tipoPago === "PROYECTO") ? 1 : plazo;
 
-      // si hubo errores de esta fila, no se agrega
       const thisRowHasError = errors.some(e => e.startsWith(`Fila ${rowNum}:`));
       if (!thisRowHasError) {
         itemsOut.push({

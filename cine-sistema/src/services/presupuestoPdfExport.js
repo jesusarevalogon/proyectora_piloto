@@ -967,12 +967,26 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 /** =========================
  *  API pública (vista previa / imprimir)
  *  ========================= */
-export function exportarPresupuestoPDF() {
-  const items = readItemsFromDOM();
+export async function exportarPresupuestoPDF() {
+  // ✅ Puede ejecutarse desde Documentación (no hay DOM de Presupuesto).
+  // Primero: servidor (project_state). Si no hay, fallback a DOM/LS.
+  let items = await readItemsFromServerState();
+
+  if (!items.length) {
+    try { items = readItemsFromDOM(); } catch { /* ignore */ }
+  }
+
+  if (!items.length) {
+    try { items = readItemsFromLocalStorage(); } catch { items = []; }
+  }
+
+  if (!items.length) throw new Error("No hay partidas de Presupuesto para exportar.");
+
   const rows = enrich(items);
 
   const projectName =
     window?.appState?.project?.name ||
+    window?.appState?.profile?.projectName ||
     document.querySelector("[data-project-name]")?.getAttribute("data-project-name") ||
     "Proyecto";
 
@@ -1176,3 +1190,4 @@ async function htmlToPdfBytes(html) {
     } catch {}
   }
 }
+

@@ -319,6 +319,49 @@ function ensureDocsHydratedFromAppState() {
       return;
     }
   }
+
+  // 3) ✅ V2 (Producción): si el usuario entra directo a Entrega,
+  // todavía NO se ha abierto el módulo Documentación, por lo que window.appState.docs
+  // no existe. En ese caso, hidratamos desde project_state (Supabase) en background.
+  // NOTA: no esperamos (sync). Entrega ya hace refresh 2 veces; en el segundo
+  // refresh normalmente ya está hidratado.
+  try {
+    if (window.__docsHydratePromise) return;
+
+    const userId =
+      window?.appState?.user?.uid ||
+      window?.appState?.user?.id ||
+      window?.appState?.auth?.user?.id ||
+      null;
+
+    const projectId =
+      window?.appState?.profile?.projectId ||
+      window?.appState?.project?.id ||
+      window?.appState?.projectId ||
+      window?.appState?.project?.project_id ||
+      null;
+
+    if (!userId || !projectId) return;
+
+    window.__docsHydratePromise = (async () => {
+      try {
+        const mod = await import("../services/stateService.js");
+        const loadModuleState = mod?.loadModuleState;
+        if (typeof loadModuleState !== "function") return;
+
+        const cloud = await loadModuleState({ userId, projectId, moduleKey: "documentacion" });
+        if (cloud && typeof cloud === "object" && Object.keys(cloud).length) {
+          if (!window.appState) window.appState = {};
+          window.appState.docs = cloud;
+          try {
+            localStorage.setItem(LS_DOCS_ITEMS, JSON.stringify(cloud));
+          } catch {}
+        }
+      } catch (e) {
+        console.warn("[entrega] No se pudo hidratar Documentación desde servidor:", e);
+      }
+    })();
+  } catch {}
 }
 
 /* =========================================================
@@ -562,13 +605,79 @@ function findDocByAliases(index, aliases) {
 }
 
 function countBudgetItems() {
+  // 0) cache en memoria (hidratada desde servidor)
+  try {
+    const cached = window.__budgetItemsCache;
+    if (Array.isArray(cached)) return cached.length;
+    if (cached && typeof cached === "object" && Array.isArray(cached.items)) return cached.items.length;
+  } catch {}
+
+  // 1) intentar desde appState (si alguien lo dejó ahí)
+  try {
+    const app = window?.appState || {};
+    const candidates = [
+      app?.modules?.presupuesto,
+      app?.state?.presupuesto,
+      app?.presupuesto,
+      app?.project_state?.presupuesto,
+      app?.projectState?.presupuesto,
+    ].filter(Boolean);
+
+    for (const c of candidates) {
+      if (Array.isArray(c?.items)) return c.items.length;
+    }
+  } catch {}
+
+  // 2) fallback legacy: localStorage
   try {
     const raw = localStorage.getItem(LS_BUDGET_ITEMS);
-    if (!raw) return 0;
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) return arr.length;
-    if (arr && typeof arr === "object" && Array.isArray(arr.items)) return arr.items.length;
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr.length;
+      if (arr && typeof arr === "object" && Array.isArray(arr.items)) return arr.items.length;
+    }
   } catch {}
+
+  // 3) ✅ V2 (Producción): si Entrega se abre antes de Presupuesto,
+  // aún no hay localStorage ni DOM; hidratamos desde project_state en background.
+  try {
+    if (!window.__budgetHydratePromise) {
+      const userId =
+        window?.appState?.user?.uid ||
+        window?.appState?.user?.id ||
+        window?.appState?.auth?.user?.id ||
+        null;
+
+      const projectId =
+        window?.appState?.profile?.projectId ||
+        window?.appState?.project?.id ||
+        window?.appState?.projectId ||
+        window?.appState?.project?.project_id ||
+        null;
+
+      if (userId && projectId) {
+        window.__budgetHydratePromise = (async () => {
+          try {
+            const mod = await import("../services/stateService.js");
+            const loadModuleState = mod?.loadModuleState;
+            if (typeof loadModuleState !== "function") return;
+
+            const cloud = await loadModuleState({ userId, projectId, moduleKey: "presupuesto" });
+            const items = Array.isArray(cloud?.items) ? cloud.items : [];
+            window.__budgetItemsCache = items;
+
+            // opcional: dejar respaldo local para compat
+            try {
+              localStorage.setItem(LS_BUDGET_ITEMS, JSON.stringify({ items }));
+            } catch {}
+          } catch (e) {
+            console.warn("[entrega] No se pudo hidratar Presupuesto desde servidor:", e);
+          }
+        })();
+      }
+    }
+  } catch {}
+
   return 0;
 }
 
@@ -1021,3 +1130,4 @@ function blobToImage(blob) {
 function canvasToJpegBlob(canvas, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
 }
+

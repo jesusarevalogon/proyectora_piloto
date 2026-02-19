@@ -2,7 +2,7 @@
    src/modules/rutaCritica.js
    RUTA CRÍTICA (SERVER - Supabase)
 
-   ✅ Etapas fijas: PREPRODUCCIÓN | PRODUCCIÓN | POSTPRODUCCIÓN
+   ✅ Etapas fijas: DESARROLLO | PREPRODUCCIÓN | RODAJE | EDICIÓN | POSTPRODUCCIÓN
    ✅ UI:
       - Resumen (arriba izq): fechas inicio/fin + botón Vista (filtro)
       - Panel derecho: crear/editar tarea
@@ -31,7 +31,7 @@
 import { abrirVistaPreviaRutaCritica } from "../services/rutaCriticaPreview.js";
 import { loadModuleState, saveModuleState } from "../services/stateService.js";
 
-const ETAPAS = ["PREPRODUCCIÓN", "PRODUCCIÓN", "POSTPRODUCCIÓN"];
+const ETAPAS = ["DESARROLLO", "PREPRODUCCIÓN", "RODAJE", "EDICIÓN", "POSTPRODUCCIÓN"];
 
 // ✅ Server keys
 const MODULE_KEY = "rutaCritica";
@@ -76,9 +76,11 @@ export function renderRutaCriticaView() {
           </div>
         </div>
 
-        <div class="rc-stages" style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-top:14px;">
+        <div class="rc-stages" style="display:grid; grid-template-columns: repeat(5, 1fr); gap:12px; margin-top:14px;">
+          ${renderStageCard("DESARROLLO")}
           ${renderStageCard("PREPRODUCCIÓN")}
-          ${renderStageCard("PRODUCCIÓN")}
+          ${renderStageCard("RODAJE")}
+          ${renderStageCard("EDICIÓN")}
           ${renderStageCard("POSTPRODUCCIÓN")}
         </div>
 
@@ -178,7 +180,8 @@ export function renderRutaCriticaView() {
 
           <textarea id="rcBulkText" style="width:100%; height:160px; resize:vertical;"
 placeholder="ETAPA	TAREA	INICIO	FIN	NOTAS
-PREPRODUCCIÓN	Renta equipo A	2026-02-01	2026-02-03	confirmar proveedor"></textarea>
+DESARROLLO	Investigación referencias	2026-02-01	2026-02-03	-
+PREPRODUCCIÓN	Renta equipo A	2026-02-04	2026-02-06	confirmar proveedor"></textarea>
 
           <div class="rc-actions" style="margin-top:10px; display:flex; gap:10px; align-items:center;">
             <button id="rcBulkPreview" class="btn btn-secondary">Previsualizar</button>
@@ -214,8 +217,10 @@ PREPRODUCCIÓN	Renta equipo A	2026-02-01	2026-02-03	confirmar proveedor"></texta
 }
 
 function etapaKey(label) {
+  if (label === "DESARROLLO") return "DEV";
   if (label === "PREPRODUCCIÓN") return "PRE";
-  if (label === "PRODUCCIÓN") return "PROD";
+  if (label === "RODAJE") return "ROD";
+  if (label === "EDICIÓN") return "EDI";
   return "POST";
 }
 
@@ -290,23 +295,33 @@ export async function bindRutaCriticaEvents() {
   const bulkTbody = document.getElementById("rcBulkTbody");
 
   // Stage inputs
+  const stDevIni = document.getElementById("rcStageIni_DEV");
+  const stDevFin = document.getElementById("rcStageFin_DEV");
   const stPreIni = document.getElementById("rcStageIni_PRE");
   const stPreFin = document.getElementById("rcStageFin_PRE");
-  const stProIni = document.getElementById("rcStageIni_PROD");
-  const stProFin = document.getElementById("rcStageFin_PROD");
+  const stRodIni = document.getElementById("rcStageIni_ROD");
+  const stRodFin = document.getElementById("rcStageFin_ROD");
+  const stEdiIni = document.getElementById("rcStageIni_EDI");
+  const stEdiFin = document.getElementById("rcStageFin_EDI");
   const stPostIni = document.getElementById("rcStageIni_POST");
   const stPostFin = document.getElementById("rcStageFin_POST");
 
+  const msgDev = document.getElementById("rcStageMsg_DEV");
   const msgPre = document.getElementById("rcStageMsg_PRE");
-  const msgPro = document.getElementById("rcStageMsg_PROD");
+  const msgRod = document.getElementById("rcStageMsg_ROD");
+  const msgEdi = document.getElementById("rcStageMsg_EDI");
   const msgPost = document.getElementById("rcStageMsg_POST");
 
+  const btnSaveDev = document.getElementById("rcGuardar_DEV");
   const btnSavePre = document.getElementById("rcGuardar_PRE");
-  const btnSavePro = document.getElementById("rcGuardar_PROD");
+  const btnSaveRod = document.getElementById("rcGuardar_ROD");
+  const btnSaveEdi = document.getElementById("rcGuardar_EDI");
   const btnSavePost = document.getElementById("rcGuardar_POST");
 
+  const btnVistaDev = document.getElementById("rcVista_DEV");
   const btnVistaPre = document.getElementById("rcVista_PRE");
-  const btnVistaPro = document.getElementById("rcVista_PROD");
+  const btnVistaRod = document.getElementById("rcVista_ROD");
+  const btnVistaEdi = document.getElementById("rcVista_EDI");
   const btnVistaPost = document.getElementById("rcVista_POST");
 
   // ---- Server identity ----
@@ -321,8 +336,10 @@ export async function bindRutaCriticaEvents() {
   ========================= */
   function emptyStages() {
     return {
+      dev: { ini: "", fin: "" },
       pre: { ini: "", fin: "" },
-      prod: { ini: "", fin: "" },
+      rod: { ini: "", fin: "" },
+      edi: { ini: "", fin: "" },
       post: { ini: "", fin: "" },
     };
   }
@@ -333,8 +350,10 @@ export async function bindRutaCriticaEvents() {
     const tasksIn = serverState?.tasks;
 
     const stagesOut = stagesIn ? {
+      dev: { ini: stagesIn?.dev?.ini || "", fin: stagesIn?.dev?.fin || "" },
       pre: { ini: stagesIn?.pre?.ini || "", fin: stagesIn?.pre?.fin || "" },
-      prod: { ini: stagesIn?.prod?.ini || "", fin: stagesIn?.prod?.fin || "" },
+      rod: { ini: stagesIn?.rod?.ini || "", fin: stagesIn?.rod?.fin || "" },
+      edi: { ini: stagesIn?.edi?.ini || "", fin: stagesIn?.edi?.fin || "" },
       post: { ini: stagesIn?.post?.ini || "", fin: stagesIn?.post?.fin || "" },
     } : emptyStages();
 
@@ -392,7 +411,7 @@ export async function bindRutaCriticaEvents() {
   function saveTasks() { queueSaveToServer(); }
 
   // ---- State ----
-  let stages = emptyStages(); // {pre:{ini,fin}, prod:{ini,fin}, post:{ini,fin}}
+  let stages = emptyStages(); // {dev:{ini,fin}, pre:{ini,fin}, rod:{ini,fin}, edi:{ini,fin}, post:{ini,fin}}
   let tasks = [];            // [{uid, etapa, tarea, ini, fin, notas, createdAt, updatedAt}]
   let filter = null;         // null = todas, else etapaLabel
   let selectedUid = null;
@@ -443,12 +462,16 @@ export async function bindRutaCriticaEvents() {
   };
 
   // ---- Stage events ----
+  btnSaveDev.addEventListener("click", () => saveStage("DESARROLLO"));
   btnSavePre.addEventListener("click", () => saveStage("PREPRODUCCIÓN"));
-  btnSavePro.addEventListener("click", () => saveStage("PRODUCCIÓN"));
+  btnSaveRod.addEventListener("click", () => saveStage("RODAJE"));
+  btnSaveEdi.addEventListener("click", () => saveStage("EDICIÓN"));
   btnSavePost.addEventListener("click", () => saveStage("POSTPRODUCCIÓN"));
 
+  btnVistaDev.addEventListener("click", () => setFilter("DESARROLLO"));
   btnVistaPre.addEventListener("click", () => setFilter("PREPRODUCCIÓN"));
-  btnVistaPro.addEventListener("click", () => setFilter("PRODUCCIÓN"));
+  btnVistaRod.addEventListener("click", () => setFilter("RODAJE"));
+  btnVistaEdi.addEventListener("click", () => setFilter("EDICIÓN"));
   btnVistaPost.addEventListener("click", () => setFilter("POSTPRODUCCIÓN"));
 
   // ---- Table events ----
@@ -521,10 +544,14 @@ export async function bindRutaCriticaEvents() {
   });
 
   function hydrateStageInputsFromState() {
+    stDevIni.value = stages.dev.ini || "";
+    stDevFin.value = stages.dev.fin || "";
     stPreIni.value = stages.pre.ini || "";
     stPreFin.value = stages.pre.fin || "";
-    stProIni.value = stages.prod.ini || "";
-    stProFin.value = stages.prod.fin || "";
+    stRodIni.value = stages.rod.ini || "";
+    stRodFin.value = stages.rod.fin || "";
+    stEdiIni.value = stages.edi.ini || "";
+    stEdiFin.value = stages.edi.fin || "";
     stPostIni.value = stages.post.ini || "";
     stPostFin.value = stages.post.fin || "";
   }
@@ -555,12 +582,18 @@ export async function bindRutaCriticaEvents() {
     let ini = "";
     let fin = "";
 
-    if (etapaLabel === "PREPRODUCCIÓN") {
+    if (etapaLabel === "DESARROLLO") {
+      ini = normalizeDateInput(stDevIni.value);
+      fin = normalizeDateInput(stDevFin.value);
+    } else if (etapaLabel === "PREPRODUCCIÓN") {
       ini = normalizeDateInput(stPreIni.value);
       fin = normalizeDateInput(stPreFin.value);
-    } else if (etapaLabel === "PRODUCCIÓN") {
-      ini = normalizeDateInput(stProIni.value);
-      fin = normalizeDateInput(stProFin.value);
+    } else if (etapaLabel === "RODAJE") {
+      ini = normalizeDateInput(stRodIni.value);
+      fin = normalizeDateInput(stRodFin.value);
+    } else if (etapaLabel === "EDICIÓN") {
+      ini = normalizeDateInput(stEdiIni.value);
+      fin = normalizeDateInput(stEdiFin.value);
     } else {
       ini = normalizeDateInput(stPostIni.value);
       fin = normalizeDateInput(stPostFin.value);
@@ -575,20 +608,40 @@ export async function bindRutaCriticaEvents() {
       return;
     }
 
-    if (etapaLabel === "PREPRODUCCIÓN") {
-      stages.pre = { ini, fin };
+    if (etapaLabel === "DESARROLLO") {
+      stages.dev = { ini, fin };
 
-      const expectedProdIni = addDays(iniOrFin(stages.pre.fin), 1);
-      if (!stages.prod.ini) {
-        stages.prod.ini = expectedProdIni;
-        stProIni.value = expectedProdIni;
+      const expectedPreIni = addDays(iniOrFin(stages.dev.fin), 1);
+      if (!stages.pre.ini) {
+        stages.pre.ini = expectedPreIni;
+        stPreIni.value = expectedPreIni;
       }
     }
 
-    if (etapaLabel === "PRODUCCIÓN") {
-      stages.prod = { ini, fin };
+    if (etapaLabel === "PREPRODUCCIÓN") {
+      stages.pre = { ini, fin };
 
-      const expectedPostIni = addDays(iniOrFin(stages.prod.fin), 1);
+      const expectedRodIni = addDays(iniOrFin(stages.pre.fin), 1);
+      if (!stages.rod.ini) {
+        stages.rod.ini = expectedRodIni;
+        stRodIni.value = expectedRodIni;
+      }
+    }
+
+    if (etapaLabel === "RODAJE") {
+      stages.rod = { ini, fin };
+
+      const expectedEdiIni = addDays(iniOrFin(stages.rod.fin), 1);
+      if (!stages.edi.ini) {
+        stages.edi.ini = expectedEdiIni;
+        stEdiIni.value = expectedEdiIni;
+      }
+    }
+
+    if (etapaLabel === "EDICIÓN") {
+      stages.edi = { ini, fin };
+
+      const expectedPostIni = addDays(iniOrFin(stages.edi.fin), 1);
       if (!stages.post.ini) {
         stages.post.ini = expectedPostIni;
         stPostIni.value = expectedPostIni;
@@ -610,60 +663,104 @@ export async function bindRutaCriticaEvents() {
      Gate de etapas (bloqueo)
   ========================= */
   function stageGate() {
-    const { pre, prod, post } = stages;
+    const { dev, pre, rod, edi, post } = stages;
 
-    if (!pre.ini || !pre.fin || !prod.ini || !prod.fin || !post.ini || !post.fin) {
-      return { ok: false, message: "Primero guarda las fechas de PRE / PRODUCCIÓN / POSTPRODUCCIÓN (inicio y fin)." };
+    if (
+      !dev.ini || !dev.fin ||
+      !pre.ini || !pre.fin ||
+      !rod.ini || !rod.fin ||
+      !edi.ini || !edi.fin ||
+      !post.ini || !post.fin
+    ) {
+      return { ok: false, message: "Primero guarda las fechas de DESARROLLO / PRE / RODAJE / EDICIÓN / POST (inicio y fin)." };
     }
 
+    if (cmpDate(dev.ini, dev.fin) > 0) return { ok: false, message: "DESARROLLO: fin no puede ser antes de inicio." };
     if (cmpDate(pre.ini, pre.fin) > 0) return { ok: false, message: "PREPRODUCCIÓN: fin no puede ser antes de inicio." };
-    if (cmpDate(prod.ini, prod.fin) > 0) return { ok: false, message: "PRODUCCIÓN: fin no puede ser antes de inicio." };
+    if (cmpDate(rod.ini, rod.fin) > 0) return { ok: false, message: "RODAJE: fin no puede ser antes de inicio." };
+    if (cmpDate(edi.ini, edi.fin) > 0) return { ok: false, message: "EDICIÓN: fin no puede ser antes de inicio." };
     if (cmpDate(post.ini, post.fin) > 0) return { ok: false, message: "POSTPRODUCCIÓN: fin no puede ser antes de inicio." };
 
-    const expectedProdIni = addDays(pre.fin, 1);
-    if (prod.ini !== expectedProdIni) {
+    const expectedPreIni = addDays(dev.fin, 1);
+    if (pre.ini !== expectedPreIni) {
       return {
         ok: false,
-        message: `Revisar fechas: PRODUCCIÓN debe iniciar ${fmtDMY(expectedProdIni)} (día siguiente al fin de PRE). Actualmente: ${fmtDMY(prod.ini)}.`,
-        warn: { stage: "PROD", expected: expectedProdIni, actual: prod.ini }
+        message: `Revisar fechas: PREPRODUCCIÓN debe iniciar ${fmtDMY(expectedPreIni)} (día siguiente al fin de DESARROLLO). Actualmente: ${fmtDMY(pre.ini)}.`,
+        warn: { stage: "PRE", expected: expectedPreIni, actual: pre.ini }
       };
     }
 
-    const expectedPostIni = addDays(prod.fin, 1);
+    const expectedRodIni = addDays(pre.fin, 1);
+    if (rod.ini !== expectedRodIni) {
+      return {
+        ok: false,
+        message: `Revisar fechas: RODAJE debe iniciar ${fmtDMY(expectedRodIni)} (día siguiente al fin de PRE). Actualmente: ${fmtDMY(rod.ini)}.`,
+        warn: { stage: "ROD", expected: expectedRodIni, actual: rod.ini }
+      };
+    }
+
+    const expectedEdiIni = addDays(rod.fin, 1);
+    if (edi.ini !== expectedEdiIni) {
+      return {
+        ok: false,
+        message: `Revisar fechas: EDICIÓN debe iniciar ${fmtDMY(expectedEdiIni)} (día siguiente al fin de RODAJE). Actualmente: ${fmtDMY(edi.ini)}.`,
+        warn: { stage: "EDI", expected: expectedEdiIni, actual: edi.ini }
+      };
+    }
+
+    const expectedPostIni = addDays(edi.fin, 1);
     if (post.ini !== expectedPostIni) {
       return {
         ok: false,
-        message: `Revisar fechas: POSTPRODUCCIÓN debe iniciar ${fmtDMY(expectedPostIni)} (día siguiente al fin de PRODUCCIÓN). Actualmente: ${fmtDMY(post.ini)}.`,
+        message: `Revisar fechas: POSTPRODUCCIÓN debe iniciar ${fmtDMY(expectedPostIni)} (día siguiente al fin de EDICIÓN). Actualmente: ${fmtDMY(post.ini)}.`,
         warn: { stage: "POST", expected: expectedPostIni, actual: post.ini }
       };
     }
 
-    if (cmpDate(prod.ini, pre.fin) <= 0) return { ok: false, message: "No overlap: PRODUCCIÓN debe iniciar después del fin de PRE." };
-    if (cmpDate(post.ini, prod.fin) <= 0) return { ok: false, message: "No overlap: POST debe iniciar después del fin de PRODUCCIÓN." };
+    if (cmpDate(pre.ini, dev.fin) <= 0) return { ok: false, message: "No overlap: PREPRODUCCIÓN debe iniciar después del fin de DESARROLLO." };
+    if (cmpDate(rod.ini, pre.fin) <= 0) return { ok: false, message: "No overlap: RODAJE debe iniciar después del fin de PRE." };
+    if (cmpDate(edi.ini, rod.fin) <= 0) return { ok: false, message: "No overlap: EDICIÓN debe iniciar después del fin de RODAJE." };
+    if (cmpDate(post.ini, edi.fin) <= 0) return { ok: false, message: "No overlap: POST debe iniciar después del fin de EDICIÓN." };
 
     return { ok: true };
   }
 
   function paintStageWarnings(gate) {
-    [stProIni, stPostIni].forEach((el) => {
+    [stPreIni, stRodIni, stEdiIni, stPostIni].forEach((el) => {
       el.style.background = "";
       el.style.borderColor = "";
     });
 
+    setStageMsg(msgDev, "", null);
     setStageMsg(msgPre, "", null);
-    setStageMsg(msgPro, "", null);
+    setStageMsg(msgRod, "", null);
+    setStageMsg(msgEdi, "", null);
     setStageMsg(msgPost, "", null);
 
+    if (stages.dev.ini && stages.dev.fin) setStageMsg(msgDev, `Guardado: ${fmtDMY(stages.dev.ini)} → ${fmtDMY(stages.dev.fin)}`, "ok");
     if (stages.pre.ini && stages.pre.fin) setStageMsg(msgPre, `Guardado: ${fmtDMY(stages.pre.ini)} → ${fmtDMY(stages.pre.fin)}`, "ok");
-    if (stages.prod.ini && stages.prod.fin) setStageMsg(msgPro, `Guardado: ${fmtDMY(stages.prod.ini)} → ${fmtDMY(stages.prod.fin)}`, "ok");
+    if (stages.rod.ini && stages.rod.fin) setStageMsg(msgRod, `Guardado: ${fmtDMY(stages.rod.ini)} → ${fmtDMY(stages.rod.fin)}`, "ok");
+    if (stages.edi.ini && stages.edi.fin) setStageMsg(msgEdi, `Guardado: ${fmtDMY(stages.edi.ini)} → ${fmtDMY(stages.edi.fin)}`, "ok");
     if (stages.post.ini && stages.post.fin) setStageMsg(msgPost, `Guardado: ${fmtDMY(stages.post.ini)} → ${fmtDMY(stages.post.fin)}`, "ok");
 
     if (gate.ok) return;
 
-    if (gate.warn?.stage === "PROD") {
-      stProIni.style.background = "rgba(255, 200, 0, .18)";
-      stProIni.style.borderColor = "rgba(255, 200, 0, .55)";
-      setStageMsg(msgPro, `⚠ Revisar: inicio esperado ${fmtDMY(gate.warn.expected)}. Actual: ${fmtDMY(gate.warn.actual)}.`, "warn");
+    if (gate.warn?.stage === "PRE") {
+      stPreIni.style.background = "rgba(255, 200, 0, .18)";
+      stPreIni.style.borderColor = "rgba(255, 200, 0, .55)";
+      setStageMsg(msgPre, `⚠ Revisar: inicio esperado ${fmtDMY(gate.warn.expected)}. Actual: ${fmtDMY(gate.warn.actual)}.`, "warn");
+    }
+
+    if (gate.warn?.stage === "ROD") {
+      stRodIni.style.background = "rgba(255, 200, 0, .18)";
+      stRodIni.style.borderColor = "rgba(255, 200, 0, .55)";
+      setStageMsg(msgRod, `⚠ Revisar: inicio esperado ${fmtDMY(gate.warn.expected)}. Actual: ${fmtDMY(gate.warn.actual)}.`, "warn");
+    }
+
+    if (gate.warn?.stage === "EDI") {
+      stEdiIni.style.background = "rgba(255, 200, 0, .18)";
+      stEdiIni.style.borderColor = "rgba(255, 200, 0, .55)";
+      setStageMsg(msgEdi, `⚠ Revisar: inicio esperado ${fmtDMY(gate.warn.expected)}. Actual: ${fmtDMY(gate.warn.actual)}.`, "warn");
     }
 
     if (gate.warn?.stage === "POST") {
@@ -703,7 +800,7 @@ export async function bindRutaCriticaEvents() {
   function renderAll() {
     tasks = (tasks || []).map((t) => ({
       uid: t.uid || mkUid(),
-      etapa: normalizeEtapa(t.etapa) || "PREPRODUCCIÓN",
+      etapa: normalizeEtapa(t.etapa) || "DESARROLLO",
       tarea: (t.tarea || "").trim(),
       ini: normalizeDateInput(t.ini) || "",
       fin: normalizeDateInput(t.fin) || "",
@@ -826,7 +923,7 @@ export async function bindRutaCriticaEvents() {
     inpIni.value = "";
     inpFin.value = "";
     inpNotas.value = "";
-    selEtapa.value = "PREPRODUCCIÓN";
+    selEtapa.value = "DESARROLLO";
     renderAll();
   }
 
@@ -872,7 +969,7 @@ export async function bindRutaCriticaEvents() {
       return;
     }
 
-    const etapa = normalizeEtapa(selEtapa.value) || "PREPRODUCCIÓN";
+    const etapa = normalizeEtapa(selEtapa.value) || "DESARROLLO";
     const tarea = (inpTarea.value || "").trim();
     if (!tarea) {
       alert("Falta: Tarea.");
@@ -941,8 +1038,10 @@ export async function bindRutaCriticaEvents() {
   }
 
   function stageRange(etapaLabel) {
+    if (etapaLabel === "DESARROLLO") return stages.dev.ini && stages.dev.fin ? { ini: stages.dev.ini, fin: stages.dev.fin } : null;
     if (etapaLabel === "PREPRODUCCIÓN") return stages.pre.ini && stages.pre.fin ? { ini: stages.pre.ini, fin: stages.pre.fin } : null;
-    if (etapaLabel === "PRODUCCIÓN") return stages.prod.ini && stages.prod.fin ? { ini: stages.prod.ini, fin: stages.prod.fin } : null;
+    if (etapaLabel === "RODAJE") return stages.rod.ini && stages.rod.fin ? { ini: stages.rod.ini, fin: stages.rod.fin } : null;
+    if (etapaLabel === "EDICIÓN") return stages.edi.ini && stages.edi.fin ? { ini: stages.edi.ini, fin: stages.edi.fin } : null;
     return stages.post.ini && stages.post.fin ? { ini: stages.post.ini, fin: stages.post.fin } : null;
   }
 
@@ -1104,7 +1203,11 @@ export async function bindRutaCriticaEvents() {
   ========================= */
   function applyDateTypingSupport() {
     const allDateInputs = [
-      stPreIni, stPreFin, stProIni, stProFin, stPostIni, stPostFin,
+      stDevIni, stDevFin,
+      stPreIni, stPreFin,
+      stRodIni, stRodFin,
+      stEdiIni, stEdiFin,
+      stPostIni, stPostFin,
       inpIni, inpFin
     ].filter(Boolean);
 
@@ -1121,8 +1224,79 @@ export async function bindRutaCriticaEvents() {
   ========================= */
   function normalizeEtapa(v) {
     const s = norm(v);
+    if (s === "DESARROLLO") return "DESARROLLO";
     if (s === "PREPRODUCCION" || s === "PRE PRODUCCION") return "PREPRODUCCIÓN";
-    if (s === "PRODUCCION") return "PRODUCCIÓN";
+    if (s === "PRODUCCION" || s === "PRODUCCION" || s === "PRODUCCION " || s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "PRODUCCION") return "RODAJE";
+    if (s === "RODAJE") return "RODAJE";
+    if (s === "EDICION") return "EDICIÓN";
     if (s === "POSTPRODUCCION" || s === "POST PRODUCCION" || s === "POST-PRODUCCION") return "POSTPRODUCCIÓN";
     return null;
   }

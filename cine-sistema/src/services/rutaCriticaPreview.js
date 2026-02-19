@@ -17,6 +17,10 @@
    ✅ AJUSTE QUIRÚRGICO (SOLICITADO):
    - En el export final (exportarRutaCriticaPdfBytes) NO debe aparecer el botón "Exportar PDF"
    - En la vista previa (abrirVistaPreviaRutaCritica) SÍ debe aparecer
+
+   ✅ AJUSTE QUIRÚRGICO (NUEVO):
+   - Agrega una PRIMERA hoja "RESUMEN RUTA CRÍTICA" antes de la tabla completa,
+     sin romper el slicing multipágina, logo, ni la vista previa.
 ========================================================= */
 
 const LS_RC_KEY = "RUTA_CRITICA_V1_DATA";
@@ -134,6 +138,14 @@ export function abrirVistaPreviaRutaCritica({ data, projectName }) {
   w.document.open();
   w.document.write(html);
   w.document.close();
+
+  try {
+    w.__RC_PREVIEW_PAYLOAD = {
+      data: normalizeRutaArray(data) || data,
+      projectName,
+    };
+  } catch {}
+
   w.focus();
 }
 
@@ -189,7 +201,18 @@ export async function exportarRutaCriticaPdfBytes({ data, projectName } = {}) {
     showActions: false,
   });
 
-  return await htmlToPdfBytesFromRutaCriticaHTML(html);
+  const resumenRows = buildResumenFromComputed(computed);
+  const resumenHtml = buildResumenRutaCriticaHTML({
+    projectName: pName,
+    rows: resumenRows,
+    showActions: false,
+  });
+
+  return await htmlToPdfBytesFromRutaCriticaHTML({ html, resumenHtml });
+}
+
+if (typeof window !== "undefined") {
+  window.__exportRutaCriticaPdfBytes = exportarRutaCriticaPdfBytes;
 }
 
 /* =========================================================
@@ -459,7 +482,28 @@ ${showActions ? `
     document.body.style.zoom = scale.toFixed(4);
   }
 
-  btn.addEventListener("click", () => {
+  async function exportWithResumenIfAvailable(){
+    const openerFn = window.opener && window.opener.__exportRutaCriticaPdfBytes;
+    if (typeof openerFn !== "function") return false;
+
+    const payload = window.__RC_PREVIEW_PAYLOAD || {};
+    try {
+      const bytes = await openerFn({ data: payload.data, projectName: payload.projectName });
+      const blob = new Blob([bytes], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 20000);
+      return true;
+    } catch (e) {
+      console.error(e);
+      return false;
+    }
+  }
+
+  btn.addEventListener("click", async () => {
+    const ok = await exportWithResumenIfAvailable();
+    if (ok) return;
+
     fitToWidthForPrint();
     window.print();
     setTimeout(() => { document.body.style.zoom = "1"; }, 300);
@@ -474,10 +518,218 @@ ${showActions ? `
 }
 
 /* =========================================================
+   Resumen: HTML builder
+========================================================= */
+function buildResumenRutaCriticaHTML({ projectName, rows, showActions = false }) {
+  const safeName = escapeHtml(projectName || "Proyecto");
+  const items = Array.isArray(rows) ? rows : [];
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Resumen Ruta Crítica</title>
+<style>
+  body{ margin:0; font-family: Arial, Helvetica, sans-serif; color:#111; background:#fff; }
+
+  .topbar{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:10px;
+  }
+  button{
+    padding:8px 12px;
+    font-weight:700;
+    border:1px solid #999;
+    background:#fff;
+    cursor:pointer;
+  }
+
+  .wrapper{
+    padding: 22px 26px 18px;
+  }
+
+  .project-name{
+    font-weight:900;
+    font-size:18px;
+    letter-spacing:.2px;
+    text-align:center;
+    margin: 8px 0 12px;
+  }
+
+  .title{
+    font-weight:900;
+    font-size:16px;
+    text-align:center;
+    margin: 0 0 18px;
+  }
+
+  .card{
+    max-width: 680px;
+    margin: 0 auto;
+  }
+
+  table{
+    width:100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size:13px;
+  }
+  td{
+    border: 1px solid #222;
+    padding: 10px 12px;
+    vertical-align: middle;
+  }
+  .col-etapa{
+    width: 44%;
+    color: #fff;
+    font-weight: 900;
+    text-align: center;
+  }
+  .col-fecha{
+    width: 56%;
+    color: #111;
+    font-weight: 400;
+    text-align: center;
+    background: #fff;
+  }
+
+  @page { size: A4 landscape; margin: 10mm; }
+
+  @media print {
+    .topbar { display:none !important; }
+  }
+</style>
+</head>
+<body>
+
+${showActions ? `
+<div class="topbar">
+  <div><b>Vista previa Resumen Ruta Crítica</b></div>
+  <button id="btnExport">Exportar PDF</button>
+</div>
+` : ``}
+
+<div class="wrapper">
+  <div class="project-name">NOMBRE DEL PROYECTO: ${safeName}</div>
+  <div class="title">RESUMEN RUTA CRÍTICA</div>
+
+  <div class="card">
+    <table>
+      <tbody>
+        ${items.map((r) => `
+          <tr>
+            <td class="col-etapa" style="background:${escapeAttr(r.color || "#1f2a44")};">
+              ${escapeHtml(r.etapa || "")}
+            </td>
+            <td class="col-fecha">
+              ${escapeHtml(r.rango || "")}
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+</body>
+</html>
+`;
+}
+
+/* =========================================================
+   Resumen: consolidación por etapa desde computed
+========================================================= */
+function buildResumenFromComputed(computed) {
+  const data = Array.isArray(computed?.data) ? computed.data : [];
+  const order = ["DESARROLLO", "PREPRODUCCIÓN", "RODAJE", "EDICIÓN", "POSTPRODUCCIÓN"];
+
+  const map = new Map();
+
+  for (const d of data) {
+    const etapa = String(d?.etapa || "").trim();
+    if (!etapa) continue;
+
+    const ini = safeIsoDate(d?.inicio);
+    const fin = safeIsoDate(d?.fin) || ini;
+
+    if (!ini) continue;
+
+    if (!map.has(etapa)) {
+      map.set(etapa, { etapa, minIni: ini, maxFin: fin });
+    } else {
+      const cur = map.get(etapa);
+      if (cmpIso(ini, cur.minIni) < 0) cur.minIni = ini;
+      if (cmpIso(fin, cur.maxFin) > 0) cur.maxFin = fin;
+    }
+  }
+
+  const present = Array.from(map.values());
+
+  const ordered = [];
+  for (const e of order) {
+    const found = present.find((x) => x.etapa === e);
+    if (found) ordered.push(found);
+  }
+  for (const x of present) {
+    if (!order.includes(x.etapa)) ordered.push(x);
+  }
+
+  return ordered.map((x) => ({
+    etapa: x.etapa,
+    rango: `${formatLongDateEsMX(x.minIni)} – ${formatLongDateEsMX(x.maxFin || x.minIni)}`,
+    color: stageColor(x.etapa),
+  }));
+}
+
+function stageColor(etapa) {
+  const s = String(etapa || "");
+  if (s === "DESARROLLO") return "#e84b64";
+  if (s === "PREPRODUCCIÓN") return "#1f6f54";
+  if (s === "RODAJE") return "#2f63c6";
+  if (s === "EDICIÓN") return "#0e7c86";
+  if (s === "POSTPRODUCCIÓN") return "#8b6cff";
+  return "#1f2a44";
+}
+
+function safeIsoDate(v) {
+  const s = String(v || "").trim();
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  if (isNaN(d)) return "";
+  const yy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+function cmpIso(a, b) {
+  if (!a && !b) return 0;
+  if (!a) return -1;
+  if (!b) return 1;
+  return a.localeCompare(b);
+}
+
+function formatLongDateEsMX(iso) {
+  const s = String(iso || "").trim();
+  if (!s) return "";
+  const d = new Date(`${s}T00:00:00`);
+  if (isNaN(d)) return s;
+  const day = d.getDate();
+  const month = d.toLocaleDateString("es-MX", { month: "long" });
+  const year = d.getFullYear();
+  return `${day} de ${month} ${year}`;
+}
+
+/* =========================================================
    HTML -> PDF bytes (html2canvas + jsPDF)
    ✅ V2: si hay logo, lo estampa en cada página (arriba derecha)
+   ✅ V3: agrega una hoja resumen antes del contenido actual
 ========================================================= */
-async function htmlToPdfBytesFromRutaCriticaHTML(html) {
+async function htmlToPdfBytesFromRutaCriticaHTML(htmlOrOpts) {
   const [{ default: html2canvas }, jsPdfMod] = await Promise.all([
     import("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/+esm"),
     import("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/+esm"),
@@ -485,15 +737,16 @@ async function htmlToPdfBytesFromRutaCriticaHTML(html) {
 
   const jsPDF = jsPdfMod.jsPDF || jsPdfMod.default?.jsPDF || jsPdfMod.default || jsPdfMod;
 
-  // ✅ V2: preparar logo (si existe)
+  const mainHtml = typeof htmlOrOpts === "string" ? htmlOrOpts : (htmlOrOpts?.html || "");
+  const resumenHtml = typeof htmlOrOpts === "string" ? null : (htmlOrOpts?.resumenHtml || null);
+
   const logoDataUrl = await readLogoDataUrlFromDocs();
-  let logoStamp = null; // { imgData, wpt, hpt, headerExtra, format }
+  let logoStamp = null;
 
   if (logoDataUrl) {
     try {
       const img = await loadImageFromDataUrl(logoDataUrl);
 
-      // Tamaño “decente” para A4 landscape (pt)
       const maxWpt = 140;
       const maxHpt = 38;
 
@@ -507,107 +760,127 @@ async function htmlToPdfBytesFromRutaCriticaHTML(html) {
       const mime = dataUrlMime(logoDataUrl);
       const format = mime.includes("jpeg") || mime.includes("jpg") ? "JPEG" : "PNG";
 
-      const headerExtra = h + 12; // reserva arriba para que no tape contenido
+      const headerExtra = h + 12;
       logoStamp = { imgData: logoDataUrl, wpt: w, hpt: h, headerExtra, format };
     } catch {
       logoStamp = null;
     }
   }
 
-  const iframe = document.createElement("iframe");
-  iframe.style.position = "fixed";
-  iframe.style.left = "-99999px";
-  iframe.style.top = "0";
-  iframe.style.width = "2000px";
-  iframe.style.height = "1200px";
-  iframe.style.opacity = "0";
-  iframe.setAttribute("aria-hidden", "true");
-  document.body.appendChild(iframe);
+  const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
 
-  const doc = iframe.contentDocument;
+  const margin = 18;
+  const headerExtra = logoStamp ? logoStamp.headerExtra : 0;
+  const usableW = pageWidth - margin * 2;
+  const usableH = pageHeight - margin * 2 - headerExtra;
 
-  try {
-    doc.open();
-    doc.write(html);
-    doc.close();
+  async function renderHtmlToCanvas(html) {
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.left = "-99999px";
+    iframe.style.top = "0";
+    iframe.style.width = "2000px";
+    iframe.style.height = "1200px";
+    iframe.style.opacity = "0";
+    iframe.setAttribute("aria-hidden", "true");
+    document.body.appendChild(iframe);
 
-    await new Promise((r) => setTimeout(r, 250));
-    try { await doc.fonts?.ready; } catch {}
+    const doc = iframe.contentDocument;
 
-    const table = doc.getElementById("rcTable");
-    const surface = doc.getElementById("printSurface") || doc.body;
+    try {
+      doc.open();
+      doc.write(html);
+      doc.close();
 
-    const canvas = await html2canvas(surface, {
-      backgroundColor: "#ffffff",
-      scale: 2,
-      useCORS: true,
-      windowWidth: table?.scrollWidth || surface.scrollWidth || 2000,
-      windowHeight: surface.scrollHeight || 1200,
+      await new Promise((r) => setTimeout(r, 250));
+      try { await doc.fonts?.ready; } catch {}
+
+      const table = doc.getElementById("rcTable");
+      const surface = doc.getElementById("printSurface") || doc.body;
+
+      const canvas = await html2canvas(surface, {
+        backgroundColor: "#ffffff",
+        scale: 2,
+        useCORS: true,
+        windowWidth: table?.scrollWidth || surface.scrollWidth || 2000,
+        windowHeight: surface.scrollHeight || 1200,
+      });
+
+      return canvas;
+    } finally {
+      try { iframe.remove(); } catch {}
+    }
+  }
+
+  function stampLogoIfAny() {
+    if (!logoStamp) return;
+    stampLogoOnPage(pdf, logoStamp.imgData, logoStamp.wpt, logoStamp.hpt, {
+      margin,
+      topInset: 8,
+      format: logoStamp.format,
     });
+  }
 
-    const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
+  function addImageToCurrentPage(imgData, imgW, imgH) {
+    pdf.addImage(imgData, "JPEG", margin, margin + headerExtra, imgW, imgH, undefined, "FAST");
+    stampLogoIfAny();
+  }
 
-    const margin = 18;
-    const headerExtra = logoStamp ? logoStamp.headerExtra : 0;
-    const usableW = pageWidth - margin * 2;
-    const usableH = pageHeight - margin * 2 - headerExtra;
-
+  async function addCanvasAsPages(canvas, addPageBeforeFirst) {
     const scale = usableW / canvas.width;
     const fullImgH = canvas.height * scale;
 
     if (fullImgH <= usableH) {
       const imgData = canvas.toDataURL("image/jpeg", 0.92);
-      pdf.addImage(imgData, "JPEG", margin, margin + headerExtra, usableW, fullImgH, undefined, "FAST");
-
-      if (logoStamp) {
-        stampLogoOnPage(pdf, logoStamp.imgData, logoStamp.wpt, logoStamp.hpt, {
-          margin,
-          topInset: 8,
-          format: logoStamp.format,
-        });
-      }
-    } else {
-      const sliceCanvas = document.createElement("canvas");
-      const sliceCtx = sliceCanvas.getContext("2d");
-
-      const slicePxH = Math.floor(usableH / scale);
-      let y = 0;
-      let pageIndex = 0;
-
-      while (y < canvas.height) {
-        const h = Math.min(slicePxH, canvas.height - y);
-
-        sliceCanvas.width = canvas.width;
-        sliceCanvas.height = h;
-
-        sliceCtx.clearRect(0, 0, sliceCanvas.width, sliceCanvas.height);
-        sliceCtx.drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
-
-        const imgData = sliceCanvas.toDataURL("image/jpeg", 0.92);
-
-        if (pageIndex > 0) pdf.addPage();
-        pdf.addImage(imgData, "JPEG", margin, margin + headerExtra, usableW, h * scale, undefined, "FAST");
-
-        if (logoStamp) {
-          stampLogoOnPage(pdf, logoStamp.imgData, logoStamp.wpt, logoStamp.hpt, {
-            margin,
-            topInset: 8,
-            format: logoStamp.format,
-          });
-        }
-
-        y += h;
-        pageIndex++;
-      }
+      if (addPageBeforeFirst) pdf.addPage();
+      addImageToCurrentPage(imgData, usableW, fullImgH);
+      return;
     }
 
-    const buf = pdf.output("arraybuffer");
-    return new Uint8Array(buf);
-  } finally {
-    try { iframe.remove(); } catch {}
+    const sliceCanvas = document.createElement("canvas");
+    const sliceCtx = sliceCanvas.getContext("2d");
+
+    const slicePxH = Math.floor(usableH / scale);
+    let y = 0;
+    let pageIndex = 0;
+
+    while (y < canvas.height) {
+      const h = Math.min(slicePxH, canvas.height - y);
+
+      sliceCanvas.width = canvas.width;
+      sliceCanvas.height = h;
+
+      sliceCtx.clearRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+      sliceCtx.drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
+
+      const imgData = sliceCanvas.toDataURL("image/jpeg", 0.92);
+
+      if (addPageBeforeFirst || pageIndex > 0) pdf.addPage();
+      addImageToCurrentPage(imgData, usableW, h * scale);
+
+      y += h;
+      pageIndex++;
+      addPageBeforeFirst = false;
+    }
   }
+
+  let usedFirstPage = false;
+
+  if (resumenHtml) {
+    const resumenCanvas = await renderHtmlToCanvas(resumenHtml);
+    await addCanvasAsPages(resumenCanvas, false);
+    usedFirstPage = true;
+  }
+
+  if (mainHtml) {
+    const mainCanvas = await renderHtmlToCanvas(mainHtml);
+    await addCanvasAsPages(mainCanvas, usedFirstPage);
+  }
+
+  const buf = pdf.output("arraybuffer");
+  return new Uint8Array(buf);
 }
 
 /* =======================================================
@@ -677,4 +950,8 @@ function escapeHtml(str) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function escapeAttr(str) {
+  return escapeHtml(str).replaceAll('"', "&quot;");
 }

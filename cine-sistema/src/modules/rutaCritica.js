@@ -317,7 +317,7 @@ export async function bindRutaCriticaEvents() {
   }
 
   /* =========================
-     Server persistence helpers
+     Server persistence helpers (FIX: debounce + cola)
   ========================= */
   function emptyStages() {
     return {
@@ -342,19 +342,54 @@ export async function bindRutaCriticaEvents() {
     return { stagesOut, tasksOut };
   }
 
-  function persistToServer() {
-    // 🔒 Server-only (sin await para no congelar UI)
-    saveModuleState({
-      userId,
-      projectId,
-      moduleKey: MODULE_KEY,
-      data: { stages, tasks },
-    }).catch((e) => console.error("[rutaCritica] saveModuleState failed:", e));
+  // ✅ Evita guardar mientras estamos cargando/hidratando UI
+  let isHydrating = true;
+
+  // ✅ Debounce + cola (para no spamear upserts)
+  let saveTimer = null;
+  let pendingPayload = null;
+
+  // Serializa escrituras: si llegan varias, se encolan en orden
+  let saveInFlight = Promise.resolve();
+
+  function cloneSafe(obj) {
+    try { return structuredClone(obj); }
+    catch { return JSON.parse(JSON.stringify(obj)); }
+  }
+
+  function queueSaveToServer() {
+    if (isHydrating) return;
+
+    pendingPayload = {
+      stages: cloneSafe(stages),
+      tasks: cloneSafe(tasks),
+    };
+
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(flushSaveToServer, 250);
+  }
+
+  function flushSaveToServer() {
+    if (!pendingPayload) return;
+
+    const payload = pendingPayload;
+    pendingPayload = null;
+
+    saveInFlight = saveInFlight
+      .then(() => saveModuleState({
+        userId,
+        projectId,
+        moduleKey: MODULE_KEY,
+        data: payload,
+      }))
+      .catch((e) => {
+        console.error("[rutaCritica] saveModuleState failed:", e);
+      });
   }
 
   // compat: mismas firmas que antes
-  function saveStages() { persistToServer(); }
-  function saveTasks() { persistToServer(); }
+  function saveStages() { queueSaveToServer(); }
+  function saveTasks() { queueSaveToServer(); }
 
   // ---- State ----
   let stages = emptyStages(); // {pre:{ini,fin}, prod:{ini,fin}, post:{ini,fin}}
@@ -377,6 +412,7 @@ export async function bindRutaCriticaEvents() {
   hydrateStageInputsFromState();
   applyDateTypingSupport(); // permite dd/mm/aaaa escrito en inputs type=date
   renderAll();
+  isHydrating = false;
 
   /* =========================================================
      ✅ CAMBIO QUIRÚRGICO (IMPLEMENTACIÓN REAL PARA DOCUMENTACIÓN)
@@ -437,6 +473,7 @@ export async function bindRutaCriticaEvents() {
     selectedSet = new Set();
     saveStages();
     saveTasks();
+    flushSaveToServer(); // ✅ inmediato al limpiar
     hydrateStageInputsFromState();
     renderAll();
   });
@@ -675,8 +712,8 @@ export async function bindRutaCriticaEvents() {
       updatedAt: t.updatedAt ?? Date.now(),
     }));
 
-    // ✅ en server, persistimos normalización
-    saveTasks();
+    // ❌ FIX: NO guardar aquí (evita spam de upserts)
+    // saveTasks();
 
     const gate = stageGate();
     paintStageWarnings(gate);

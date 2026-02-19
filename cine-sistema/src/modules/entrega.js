@@ -27,9 +27,14 @@
    ✅ FIX QUIRÚRGICO (ERROR ACTUAL):
    - Entrega ya no depende solo de localStorage; ahora también lee docs desde
      Supabase Storage (path) + project_state (metadata) como Documentación V2.
+
+   ✅ FIX NUEVO (EL QUE TE FALTABA):
+   - Entrega “hidrata” el presupuesto desde project_state (Supabase) hacia localStorage (BUDGET_V1_ITEMS)
+     para que el conteo de partidas sea correcto aunque Presupuesto ya sea V2.
 ========================================================= */
 
 import { supabase } from "../services/supabase.js";
+import { loadModuleState } from "../services/stateService.js"; // ✅ NUEVO (quirúrgico)
 
 const BUCKET = "uploads";
 
@@ -49,9 +54,7 @@ const norm = (s) =>
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
 
-const LS_BUDGET_ITEMS = "BUDGET_V1_ITEMS"; // de presupuesto.js
-
-// ✅ (compat) si existe
+const LS_BUDGET_ITEMS = "BUDGET_V1_ITEMS"; // legacy key que Entrega ya usa para contar partidas
 const LS_DOCS_ITEMS = "DOCS_V1_ITEMS";
 
 // Catálogo (en el orden exacto 1..10)
@@ -167,56 +170,30 @@ export function bindEntregaEvents() {
   const btnRun = document.getElementById("entregaBtnRun");
 
   // ✅ Fix “todo rojo” al abrir: refresco en RAF + timeout corto
-  // ✅ + FIX real: “hidratar” y/o detectar docs antes de pintar
   requestAnimationFrame(() => {
-    try {
-      ensureDocsHydratedFromAppState();
-    } catch (e) {
-      console.warn(e);
-    }
-    try {
-      refreshStatusUI();
-    } catch (e) {
-      console.warn(e);
-    }
+    void refreshStatusUIAsync();
   });
   setTimeout(() => {
-    try {
-      ensureDocsHydratedFromAppState();
-    } catch (e) {
-      console.warn(e);
-    }
-    try {
-      refreshStatusUI();
-    } catch (e) {
-      console.warn(e);
-    }
+    void refreshStatusUIAsync();
   }, 120);
 
   btnCheck?.addEventListener("click", () => {
-    try {
+    void (async () => {
       try {
-        ensureDocsHydratedFromAppState();
+        await refreshStatusUIAsync();
+        const status = computeStatus();
+        const missing = firstMissing(status);
+        if (missing) alert(`Falta ${missing.label} para completar la entrega`);
+        else alert("Integridad OK ✅");
       } catch (e) {
-        console.warn(e);
+        alert(e?.message || String(e));
       }
-      const status = computeStatus();
-      paintStatus(status);
-      const missing = firstMissing(status);
-      if (missing) alert(`Falta ${missing.label} para completar la entrega`);
-      else alert("Integridad OK ✅");
-    } catch (e) {
-      alert(e?.message || String(e));
-    }
+    })();
   });
 
   btnRun?.addEventListener("click", async () => {
     try {
-      try {
-        ensureDocsHydratedFromAppState();
-      } catch (e) {
-        console.warn(e);
-      }
+      await refreshStatusUIAsync();
 
       const status = computeStatus();
       paintStatus(status);
@@ -256,7 +233,22 @@ export function bindEntregaEvents() {
     }
   });
 
-  function refreshStatusUI() {
+  async function refreshStatusUIAsync() {
+    // 1) docs
+    try {
+      ensureDocsHydratedFromAppState();
+    } catch (e) {
+      console.warn(e);
+    }
+
+    // 2) ✅ presupuesto desde Supabase -> localStorage (para que countBudgetItems funcione)
+    try {
+      await ensureBudgetHydratedFromServerToLocalStorage();
+    } catch (e) {
+      console.warn(e);
+    }
+
+    // 3) pintar
     const status = computeStatus();
     paintStatus(status);
   }
@@ -264,15 +256,13 @@ export function bindEntregaEvents() {
 
 /* =========================================================
    ✅ FIX QUIRÚRGICO: hidratar docs desde appState/localStorage
-   (si Documentación ya fue abierto, ahí vive window.appState.docs)
 ========================================================= */
 
 function ensureDocsHydratedFromAppState() {
-  // Si ya hay docs en window, no hacemos nada
   const existing = window?.appState?.docs;
   if (existing && typeof existing === "object" && Object.keys(existing).length) return;
 
-  // 1) Intentar desde localStorage DOCS_V1_ITEMS (si aún existe)
+  // 1) localStorage
   try {
     const raw = localStorage.getItem(LS_DOCS_ITEMS);
     const parsed = raw ? JSON.parse(raw) : null;
@@ -283,7 +273,7 @@ function ensureDocsHydratedFromAppState() {
     }
   } catch {}
 
-  // 2) Intentar localizar docs dentro de appState / project_state (por si alguien lo guardó ahí)
+  // 2) window/appState candidates
   const app = window?.appState || null;
   const ps =
     app?.project_state ||
@@ -319,48 +309,35 @@ function ensureDocsHydratedFromAppState() {
       return;
     }
   }
+}
 
-  // 3) ✅ V2 (Producción): si el usuario entra directo a Entrega,
-  // todavía NO se ha abierto el módulo Documentación, por lo que window.appState.docs
-  // no existe. En ese caso, hidratamos desde project_state (Supabase) en background.
-  // NOTA: no esperamos (sync). Entrega ya hace refresh 2 veces; en el segundo
-  // refresh normalmente ya está hidratado.
+/* =========================================================
+   ✅ NUEVO FIX: hidratar Presupuesto V2 (Supabase) a localStorage
+   para que Entrega pueda contar partidas sin reescribir todo.
+========================================================= */
+
+async function ensureBudgetHydratedFromServerToLocalStorage() {
+  // Si ya hay partidas en localStorage, no hacemos nada
   try {
-    if (window.__docsHydratePromise) return;
+    const raw = localStorage.getItem(LS_BUDGET_ITEMS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const n = Array.isArray(parsed) ? parsed.length : Array.isArray(parsed?.items) ? parsed.items.length : 0;
+      if (n > 0) return;
+    }
+  } catch {}
 
-    const userId =
-      window?.appState?.user?.uid ||
-      window?.appState?.user?.id ||
-      window?.appState?.auth?.user?.id ||
-      null;
+  const userId = window?.appState?.user?.uid || null;
+  const projectId = window?.appState?.profile?.projectId || null;
+  if (!userId || !projectId) return; // sin sesión completa no podemos hidratar
 
-    const projectId =
-      window?.appState?.profile?.projectId ||
-      window?.appState?.project?.id ||
-      window?.appState?.projectId ||
-      window?.appState?.project?.project_id ||
-      null;
+  // Lee presupuesto desde project_state
+  const serverState = await loadModuleState({ userId, projectId, moduleKey: "presupuesto" });
+  const items = Array.isArray(serverState?.items) ? serverState.items : [];
 
-    if (!userId || !projectId) return;
-
-    window.__docsHydratePromise = (async () => {
-      try {
-        const mod = await import("../services/stateService.js");
-        const loadModuleState = mod?.loadModuleState;
-        if (typeof loadModuleState !== "function") return;
-
-        const cloud = await loadModuleState({ userId, projectId, moduleKey: "documentacion" });
-        if (cloud && typeof cloud === "object" && Object.keys(cloud).length) {
-          if (!window.appState) window.appState = {};
-          window.appState.docs = cloud;
-          try {
-            localStorage.setItem(LS_DOCS_ITEMS, JSON.stringify(cloud));
-          } catch {}
-        }
-      } catch (e) {
-        console.warn("[entrega] No se pudo hidratar Documentación desde servidor:", e);
-      }
-    })();
+  // Guardar en localStorage en el shape que countBudgetItems ya entiende
+  try {
+    localStorage.setItem(LS_BUDGET_ITEMS, JSON.stringify(items));
   } catch {}
 }
 
@@ -369,7 +346,6 @@ function ensureDocsHydratedFromAppState() {
 ========================================================= */
 
 function computeStatus() {
-  // 1) Detectar documentos de documentación (robusto)
   const docsIndex = scanLocalStorageForDocsIndex();
 
   const out = {};
@@ -449,18 +425,15 @@ function paintStatus(status) {
 
 /* =========================================================
    SCAN ROBUSTO: localizar docs en localStorage + window.appState
-   ✅ FIX: ahora reconoce Documentación V2 (metadata con `path`)
 ========================================================= */
 
 function scanLocalStorageForDocsIndex() {
   const index = [];
 
-  // ✅ intentar hidratar docs desde appState antes de escanear
   try {
     ensureDocsHydratedFromAppState();
   } catch {}
 
-  // 1) Escanear localStorage
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
     if (!k) continue;
@@ -482,7 +455,6 @@ function scanLocalStorageForDocsIndex() {
     for (const e of extracted) index.push(e);
   }
 
-  // 2) Escanear window candidates
   try {
     const candidates = [
       window?.appState?.docs,
@@ -519,26 +491,20 @@ function extractDocEntriesFromUnknownShape(parsed, sourceKey) {
     const title =
       obj.title || obj.titulo || obj.documento || obj.docName || obj.nombre || obj.label || obj.descripcion || "";
 
-    const code =
-      obj.code || obj.codigo || obj.id || obj.key || obj.slug || parentKey || "";
+    const code = obj.code || obj.codigo || obj.id || obj.key || obj.slug || parentKey || "";
 
     const mime = obj.mime || obj.mimetype || obj.type || obj.contentType || "";
 
-    // ✅ dataUrl/url/blob/base64 (V1)
     const dataUrl =
       obj.dataUrl || obj.dataURL || obj.url || obj.blobUrl || obj.base64 || obj.data || obj.content || "";
 
-    // ✅ path (V2 Supabase Storage)
     const path = obj.path || obj.storagePath || obj.storage_path || obj.keyPath || obj.filePath || "";
 
     const updatedAt = obj.updatedAt || obj.updated || obj.lastModified || obj.ts || obj.timestamp || null;
 
     const looksLikeDoc =
       (fileName || title || code) &&
-      (
-        (typeof dataUrl === "string" && dataUrl.length > 10) ||
-        (typeof path === "string" && path.length > 3)
-      );
+      ((typeof dataUrl === "string" && dataUrl.length > 10) || (typeof path === "string" && path.length > 3));
 
     if (!looksLikeDoc) return;
 
@@ -565,10 +531,8 @@ function extractDocEntriesFromUnknownShape(parsed, sourceKey) {
 
     if (typeof node !== "object") return;
 
-    // Si parece entry directa:
     pushIfDocish(node, parentKey);
 
-    // Si es objeto de "store" (key->entry)
     for (const [k, v] of Object.entries(node)) {
       if (!v) continue;
       if (typeof v === "object") {
@@ -605,79 +569,13 @@ function findDocByAliases(index, aliases) {
 }
 
 function countBudgetItems() {
-  // 0) cache en memoria (hidratada desde servidor)
-  try {
-    const cached = window.__budgetItemsCache;
-    if (Array.isArray(cached)) return cached.length;
-    if (cached && typeof cached === "object" && Array.isArray(cached.items)) return cached.items.length;
-  } catch {}
-
-  // 1) intentar desde appState (si alguien lo dejó ahí)
-  try {
-    const app = window?.appState || {};
-    const candidates = [
-      app?.modules?.presupuesto,
-      app?.state?.presupuesto,
-      app?.presupuesto,
-      app?.project_state?.presupuesto,
-      app?.projectState?.presupuesto,
-    ].filter(Boolean);
-
-    for (const c of candidates) {
-      if (Array.isArray(c?.items)) return c.items.length;
-    }
-  } catch {}
-
-  // 2) fallback legacy: localStorage
   try {
     const raw = localStorage.getItem(LS_BUDGET_ITEMS);
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) return arr.length;
-      if (arr && typeof arr === "object" && Array.isArray(arr.items)) return arr.items.length;
-    }
+    if (!raw) return 0;
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) return arr.length;
+    if (arr && typeof arr === "object" && Array.isArray(arr.items)) return arr.items.length;
   } catch {}
-
-  // 3) ✅ V2 (Producción): si Entrega se abre antes de Presupuesto,
-  // aún no hay localStorage ni DOM; hidratamos desde project_state en background.
-  try {
-    if (!window.__budgetHydratePromise) {
-      const userId =
-        window?.appState?.user?.uid ||
-        window?.appState?.user?.id ||
-        window?.appState?.auth?.user?.id ||
-        null;
-
-      const projectId =
-        window?.appState?.profile?.projectId ||
-        window?.appState?.project?.id ||
-        window?.appState?.projectId ||
-        window?.appState?.project?.project_id ||
-        null;
-
-      if (userId && projectId) {
-        window.__budgetHydratePromise = (async () => {
-          try {
-            const mod = await import("../services/stateService.js");
-            const loadModuleState = mod?.loadModuleState;
-            if (typeof loadModuleState !== "function") return;
-
-            const cloud = await loadModuleState({ userId, projectId, moduleKey: "presupuesto" });
-            const items = Array.isArray(cloud?.items) ? cloud.items : [];
-            window.__budgetItemsCache = items;
-
-            // opcional: dejar respaldo local para compat
-            try {
-              localStorage.setItem(LS_BUDGET_ITEMS, JSON.stringify({ items }));
-            } catch {}
-          } catch (e) {
-            console.warn("[entrega] No se pudo hidratar Presupuesto desde servidor:", e);
-          }
-        })();
-      }
-    }
-  } catch {}
-
   return 0;
 }
 
@@ -718,7 +616,6 @@ function createEntregaLoader() {
 }
 
 async function loadPdfLib() {
-  // Lazy load desde CDN para evitar que el bundle truene al iniciar
   const mod = await import("https://esm.sh/pdf-lib@1.17.1");
   return mod;
 }
@@ -758,23 +655,23 @@ function showPesoMensaje(bytes) {
   if (mb <= SOFT_LIMIT_MB) {
     alert(`PDF generado ✅\nPeso aproximado: ${humanMB(bytes)} MB`);
   } else {
-    alert(`PDF generado ⚠️\nPeso aproximado: ${humanMB(bytes)} MB\nRecomendación: comprímelo externamente si la convocatoria lo requiere.`);
+    alert(
+      `PDF generado ⚠️\nPeso aproximado: ${humanMB(bytes)} MB\nRecomendación: comprímelo externamente si la convocatoria lo requiere.`
+    );
   }
 }
 
 /* =========================================================
-   ✅ NUEVO: helpers para bytes desde V1 (dataUrl) o V2 (Storage path)
+   ✅ helpers para bytes desde V1 (dataUrl) o V2 (Storage path)
 ========================================================= */
 
 async function entryToBytes(docEntry) {
   if (!docEntry) return null;
 
-  // Prefer dataUrl/url/blob
   if (docEntry.dataUrl) {
     return await dataUrlToBytes(docEntry.dataUrl);
   }
 
-  // Supabase Storage path (Documentación V2)
   const path = docEntry.path || "";
   if (path && supabase) {
     const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 30);
@@ -785,7 +682,6 @@ async function entryToBytes(docEntry) {
     return new Uint8Array(buf);
   }
 
-  // Último recurso: intentar fetch directo si hay url
   if (docEntry.url) {
     const res = await fetch(docEntry.url);
     const buf = await res.arrayBuffer();
@@ -805,45 +701,22 @@ function isPdfEntry(docEntry) {
   return false;
 }
 
-function isPngEntry(docEntry) {
-  const mime = (docEntry?.mime || "").toLowerCase();
-  const name = (docEntry?.fileName || "").toLowerCase();
-  const dataUrl = docEntry?.dataUrl || "";
-  if ((dataUrl || "").startsWith("data:image/png")) return true;
-  if (mime.includes("png")) return true;
-  if (name.endsWith(".png")) return true;
-  return false;
-}
-
-function isJpgEntry(docEntry) {
-  const mime = (docEntry?.mime || "").toLowerCase();
-  const name = (docEntry?.fileName || "").toLowerCase();
-  const dataUrl = docEntry?.dataUrl || "";
-  if ((dataUrl || "").startsWith("data:image/jpeg") || (dataUrl || "").startsWith("data:image/jpg")) return true;
-  if (mime.includes("jpeg") || mime.includes("jpg")) return true;
-  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return true;
-  return false;
+function isPdfDataUrl(dataUrl, mime = "") {
+  if ((mime || "").toLowerCase().includes("pdf")) return true;
+  return (dataUrl || "").startsWith("data:application/pdf");
 }
 
 /* =========================================================
    PDF assembly (mantener orientación + mismo ancho visual)
 ========================================================= */
 
-function isPdfDataUrl(dataUrl, mime = "") {
-  if ((mime || "").toLowerCase().includes("pdf")) return true;
-  return (dataUrl || "").startsWith("data:application/pdf");
-}
-
 function getA4ForOrientation(w, h) {
-  // puntos (72dpi): A4 portrait = 595.28 x 841.89
   const A4P = { w: 595.28, h: 841.89 };
   const A4L = { w: 841.89, h: 595.28 };
   return w >= h ? A4L : A4P;
 }
 
 async function addPdfKeepOrientationSameWidth(outDoc, PDFLib, srcDoc) {
-  const { PDFDocument } = PDFLib;
-
   const pages = srcDoc.getPages();
   for (let i = 0; i < pages.length; i++) {
     const p = pages[i];
@@ -874,7 +747,7 @@ async function addPdfKeepOrientationSameWidth(outDoc, PDFLib, srcDoc) {
   }
 }
 
-async function addImageKeepOrientationSameWidth(outDoc, PDFLib, imgEmbed, label, fontBold, fontRegular) {
+async function addImageKeepOrientationSameWidth(outDoc, PDFLib, imgEmbed, label, fontBold) {
   const { rgb } = PDFLib;
 
   const imgW = imgEmbed.width;
@@ -884,8 +757,6 @@ async function addImageKeepOrientationSameWidth(outDoc, PDFLib, imgEmbed, label,
   const page = outDoc.addPage([target.w, target.h]);
 
   const marginX = 18;
-  const marginTop = 22;
-  const marginBottom = 18;
 
   if (label) {
     page.drawText(label, {
@@ -898,7 +769,7 @@ async function addImageKeepOrientationSameWidth(outDoc, PDFLib, imgEmbed, label,
   }
 
   const maxW = target.w - marginX * 2;
-  const maxH = target.h - (marginTop + marginBottom);
+  const maxH = target.h - 40;
 
   let scale = Math.min(maxW / imgW, 1);
   if (imgH * scale > maxH) scale = maxH / imgH;
@@ -919,24 +790,16 @@ async function appendOptionalDocToOut(outDoc, PDFLib, PDFDocument, docEntry) {
   const bytes = await entryToBytes(docEntry);
   if (!bytes) return false;
 
-  // PDF
   if (isPdfEntry(docEntry)) {
     const src = await PDFDocument.load(bytes);
     await addPdfKeepOrientationSameWidth(outDoc, PDFLib, src);
     return true;
   }
 
-  // Imagen
-  const imgBytes = await ensureJpegBytes(bytes, docEntry.dataUrl || "", docEntry.mime || "");
-  const jpg = await outDoc.embedJpg(imgBytes);
-  await addImageKeepOrientationSameWidth(
-    outDoc,
-    PDFLib,
-    jpg,
-    "",
-    await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold),
-    await outDoc.embedFont(PDFLib.StandardFonts.Helvetica)
-  );
+  const jpgBytes = await ensureJpegBytes(bytes, docEntry.dataUrl || "", docEntry.mime || "");
+  const jpg = await outDoc.embedJpg(jpgBytes);
+  const fontBold = await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+  await addImageKeepOrientationSameWidth(outDoc, PDFLib, jpg, "", fontBold);
   return true;
 }
 
@@ -947,8 +810,7 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
   const font = await outDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await outDoc.embedFont(StandardFonts.HelveticaBold);
 
-  // ====== OPCIONALES V2 (quirúrgico) ======
-  // Portada: si existe "portada_pdf_final" en Documentación -> AL PRINCIPIO
+  // ====== OPCIONALES V2 ======
   const docsIndex = scanLocalStorageForDocsIndex();
   const portadaEntry = findDocByAliases(docsIndex, ["PORTADA", "PORTADA PDF FINAL", "portada_pdf_final"]);
   if (portadaEntry) {
@@ -966,7 +828,6 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
   for (const ins of INSUMOS) {
     const s = status[ins.id];
 
-    // Docs normales
     if (ins.type === "doc" || ins.type === "doc_end" || ins.type === "soportes") {
       loader?.set?.(step, `Insertando: ${ins.label}…`);
       step += 6;
@@ -981,21 +842,18 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
         const src = await PDFDocument.load(bytes);
         await addPdfKeepOrientationSameWidth(outDoc, PDFLib, src);
       } else {
-        // Imagen -> convertir a JPG para compresión
         const jpgBytes = await ensureJpegBytes(bytes, docEntry.dataUrl || "", docEntry.mime || "");
         const jpg = await outDoc.embedJpg(jpgBytes);
-        await addImageKeepOrientationSameWidth(outDoc, PDFLib, jpg, ins.label, fontBold, font);
+        await addImageKeepOrientationSameWidth(outDoc, PDFLib, jpg, ins.label, fontBold);
       }
 
       continue;
     }
 
-    // Ruta Crítica (generado por sistema)
     if (ins.type === "system_ruta") {
       loader?.set?.(step, "Insertando: Ruta Crítica…");
       step += 6;
 
-      // Import lazy (para evitar romper inicial)
       const mod = await import("../services/rutaCriticaPreview.js");
       if (!mod?.exportarRutaCriticaPdfBytes) throw new Error("No se encontró exportarRutaCriticaPdfBytes()");
       const rutaBytes = await mod.exportarRutaCriticaPdfBytes();
@@ -1004,7 +862,6 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
       continue;
     }
 
-    // Presupuesto (generado por sistema)
     if (ins.type === "system_ppto") {
       loader?.set?.(step, "Insertando: Presupuesto…");
       step += 6;
@@ -1023,13 +880,11 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
         const src = await PDFDocument.load(pptoBytes);
         await addPdfKeepOrientationSameWidth(outDoc, PDFLib, src);
       } else {
-        // Placeholder claro si no hay bytes
         const page = outDoc.addPage([595.28, 841.89]);
         page.drawText("PRESUPUESTO: No se pudo generar el PDF automáticamente.", { x: 40, y: 780, size: 14, font: fontBold });
         page.drawText("Revisa que exportarPresupuestoPdfBytes() exista y funcione.", { x: 40, y: 758, size: 11, font });
       }
 
-      // ✅ V2: respaldo_presupuesto_cartas_cotizaciones va justo después del Presupuesto
       const respaldoEntry = findDocByAliases(docsIndex, [
         "RESPALDO PRESUPUESTO",
         "CARTAS COMPROMISO",
@@ -1050,7 +905,7 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
   }
 
   loader?.set?.(92, "Comprimiendo y guardando…");
-  const bytes = await outDoc.save({ useObjectStreams: true }); // compresión interna básica
+  const bytes = await outDoc.save({ useObjectStreams: true });
   if (bytes.byteLength > MAX_BYTES) throw new Error(`PDF excede límite (${humanMB(bytes.byteLength)} MB)`);
   return bytes;
 }
@@ -1080,9 +935,11 @@ async function dataUrlToBytes(dataUrl) {
   return bytes;
 }
 
-function dataUrlMime(dataUrl){ const m=(dataUrl||"").match(/^data:([^;]+);base64,/i); return m?m[1]:""; }
+function dataUrlMime(dataUrl) {
+  const m = (dataUrl || "").match(/^data:([^;]+);base64,/i);
+  return m ? m[1] : "";
+}
 
-// Convierte PNG->JPEG con compresión para bajar peso (si es imagen)
 async function ensureJpegBytes(bytes, dataUrl, mimeHint = "") {
   const mime = (mimeHint || dataUrlMime(dataUrl) || "").toLowerCase();
   if (
@@ -1130,4 +987,3 @@ function blobToImage(blob) {
 function canvasToJpegBlob(canvas, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
 }
-

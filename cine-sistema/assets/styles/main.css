@@ -515,3 +515,71 @@ select option{
     transform: none !important;
   }
 }
+
+/* =========================================================
+   FIX QUIRÚRGICO: Modal siempre en modo DARK
+   (evita modales blancos por overrides / estilos externos)
+========================================================= */
+.modal-backdrop{
+  background: rgba(0,0,0,.65) !important;
+  backdrop-filter: blur(6px) !important;
+}
+
+.modal{
+  background: #0f1623 !important;            /* panel dark */
+  color: rgba(255,255,255,.92) !important;
+  border: 1px solid rgba(255,255,255,.10) !important;
+  box-shadow: 0 20px 70px rgba(0,0,0,.65) !important;
+}
+
+.modal-header{
+  background: rgba(255,255,255,.02) !important;
+  border-bottom: 1px solid rgba(255,255,255,.08) !important;
+}
+
+.modal-header h3,
+.modal-header h2{
+  color: rgba(255,255,255,.95) !important;
+}
+
+.modal-body{
+  background: transparent !important;
+}
+
+.modal-footer{
+  background: rgba(255,255,255,.01) !important;
+  border-top: 1px solid rgba(255,255,255,.08) !important;
+}
+
+/* Labels */
+.form-grid label span{
+  color: rgba(255,255,255,.72) !important;
+}
+
+/* Inputs dentro de modal */
+.modal input,
+.modal select,
+.modal textarea{
+  background: rgba(0,0,0,.28) !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
+  color: rgba(255,255,255,.92) !important;
+}
+
+.modal input::placeholder,
+.modal textarea::placeholder{
+  color: rgba(255,255,255,.45) !important;
+}
+
+/* Botón X visible */
+.modal-close{
+  color: rgba(255,255,255,.88) !important;
+  background: rgba(255,255,255,.04) !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
+}
+
+/* Opcional: modal un poco más ancho en desktop */
+@media (min-width: 920px){
+  .modal{
+    width: min(860px, 100%) !important;
+  }
+}

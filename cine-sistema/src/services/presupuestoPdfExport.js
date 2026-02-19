@@ -151,8 +151,15 @@ function blobToDataUrl(blob) {
 
 async function getAuthCtx() {
   try {
-    const userId = window?.appState?.user?.id || window?.appState?.auth?.user?.id || null;
+    // ✅ App V2 (como en los módulos): window.appState.user.uid + window.appState.profile.projectId
+    const userId =
+      window?.appState?.user?.uid ||
+      window?.appState?.user?.id ||
+      window?.appState?.auth?.user?.id ||
+      null;
+
     const projectId =
+      window?.appState?.profile?.projectId ||
       window?.appState?.project?.id ||
       window?.appState?.project?.project_id ||
       window?.appState?.projectId ||
@@ -161,15 +168,15 @@ async function getAuthCtx() {
 
     if (userId && projectId) return { userId, projectId };
 
+    // ✅ Fallback: auth.getUser() si existe
     if (supabase?.auth?.getUser) {
       const { data } = await supabase.auth.getUser();
-      const u = data?.user;
-      const uid = u?.id || null;
+      const uid = data?.user?.id || null;
 
       const pid =
         projectId ||
+        window?.appState?.profile?.projectId ||
         window?.appState?.project?.id ||
-        window?.appState?.project?.project_id ||
         window?.appState?.projectId ||
         null;
 
@@ -184,7 +191,7 @@ async function readLogoDataUrlFromDocs() {
   try {
     const { userId, projectId } = await getAuthCtx();
     if (userId && projectId) {
-      const docState = await loadModuleState(userId, projectId, "documentacion");
+      const docState = await loadModuleState({ userId, projectId, moduleKey: "documentacion" });
       const entry = docState?.logo_proyecto;
 
       if (entry && typeof entry === "object") {
@@ -259,6 +266,57 @@ function stampLogoOnPage(pdf, imgData, logoWpt, logoHpt, opts = {}) {
   const x = pageW - margin - logoWpt;
   const y = margin - topInset;
   pdf.addImage(imgData, opts.format || "PNG", x, Math.max(6, y), logoWpt, logoHpt, undefined, "FAST");
+}
+
+
+// ✅ leer desde servidor (project_state) cuando Presupuesto ya no vive en localStorage (V2)
+async function readItemsFromServerState() {
+  try {
+    const { userId, projectId } = await getAuthCtx();
+    if (!userId || !projectId) return [];
+
+    const state = await loadModuleState({ userId, projectId, moduleKey: "presupuesto" });
+    const arr = Array.isArray(state?.items) ? state.items : [];
+    if (!arr.length) return [];
+
+    // Normaliza al mismo shape que el lector DOM/LS
+    const items = arr.map((it, i) => {
+      const etapa = normalizeEtapa(it?.etapa);
+      const concepto = (it?.concepto || "").toString().trim();
+      const cuentaNombre = (it?.cuenta || it?.cuentaNombre || "").toString().trim();
+
+      const entidadRaw = (it?.entidad || "").toString().trim().toUpperCase();
+      const entidad =
+        entidadRaw === "INTERNO" ? "PROPIAS" : entidadRaw === "PROPIA" ? "PROPIAS" : entidadRaw;
+
+      const forma = (it?.formaPago || it?.forma || "").toString().trim().toUpperCase();
+      const tipo = (it?.tipoPago || it?.tipo || "").toString().trim().toUpperCase();
+
+      const monto = Number.isFinite(Number(it?.monto)) ? Number(it.monto) : toNum(it?.monto);
+      const cantidad = Number.isFinite(Number(it?.cantidad)) ? Number(it.cantidad) : toNum(it?.cantidad);
+      const plazo = Number.isFinite(Number(it?.plazo)) ? Number(it.plazo) : toNum(it?.plazo);
+      const subtotal = Number.isFinite(Number(it?.subtotal)) ? Number(it.subtotal) : toNum(it?.subtotal);
+      const iva = Number.isFinite(Number(it?.iva)) ? Number(it.iva) : toNum(it?.iva);
+      const total = Number.isFinite(Number(it?.total)) ? Number(it.total) : toNum(it?.total);
+
+      if (!etapa) return { __error: `Registro #${i + 1}: Etapa inválida "${it?.etapa}".` };
+      if (!concepto) return { __error: `Registro #${i + 1}: falta Concepto.` };
+      if (!cuentaNombre) return { __error: `Registro #${i + 1}: falta Cuenta.` };
+
+      if (![monto, cantidad, plazo, subtotal, iva, total].every(Number.isFinite)) {
+        return { __error: `Registro #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
+      }
+
+      return { etapa, concepto, cuentaNombre, entidad, forma, tipo, monto, cantidad, plazo, subtotal, iva, total };
+    });
+
+    const errors = items.filter((x) => x && x.__error).map((x) => x.__error);
+    if (errors.length) throw new Error(errors.join("\n"));
+    return items;
+  } catch (e) {
+    // si falla servidor, devolvemos [] para que caller haga fallback DOM/LS
+    return [];
+  }
 }
 
 // ✅ leer desde localStorage si no hay DOM del presupuesto
@@ -934,12 +992,36 @@ export function exportarPresupuestoPDF() {
  *  - Entrega lo usa para anexar el Presupuesto (8)
  *  ========================================================= */
 export async function exportarPresupuestoPdfBytes({ projectName } = {}) {
-  const items = readItemsFromDOM();
+  // ✅ V2: desde Entrega NO existe el DOM del módulo Presupuesto.
+  // Intentamos primero servidor (project_state). Si no hay, fallback a DOM/LS.
+  let items = await readItemsFromServerState();
+
+  if (!items.length) {
+    try {
+      items = readItemsFromDOM();
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!items.length) {
+    try {
+      items = readItemsFromLocalStorage();
+    } catch {
+      items = [];
+    }
+  }
+
+  if (!items.length) {
+    throw new Error("No hay partidas de Presupuesto para exportar.");
+  }
+
   const rows = enrich(items);
 
   const pName =
     projectName ||
     window?.appState?.project?.name ||
+    window?.appState?.profile?.projectName ||
     document.querySelector("[data-project-name]")?.getAttribute("data-project-name") ||
     "Proyecto";
 
@@ -947,6 +1029,7 @@ export async function exportarPresupuestoPdfBytes({ projectName } = {}) {
   const html = buildPrintableHTML(rows, pName, { showActions: false });
   return await htmlToPdfBytes(html);
 }
+
 
 /* =========================================================
    HTML -> PDF bytes (html2canvas + jsPDF)

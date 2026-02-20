@@ -1,49 +1,56 @@
 /* =========================================================
-   src/modules/presupuesto.js
-   PRESUPUESTO V1 (localStorage) + CARGA MASIVA (paste Excel)
+  src/modules/presupuesto.js
+  PRESUPUESTO V1 (localStorage) + CARGA MASIVA (paste Excel)
 
-   ✅ Etapa por gasto: PREPRODUCCIÓN | PRODUCCIÓN | POSTPRODUCCIÓN
-   ✅ Cuenta: solo nombre (lista fija)
-   ✅ Cantidad
-   ✅ Candado: NO permite 0 o negativos en monto/cantidad/plazo
-   ✅ Reglas:
+  ✅ Etapa por gasto: PREPRODUCCIÓN | PRODUCCIÓN | POSTPRODUCCIÓN
+  ✅ Cuenta: solo nombre (lista fija)
+  ✅ Cantidad
+  ✅ Candado: NO permite 0 o negativos en monto/cantidad/plazo
+  ✅ Reglas:
       - Subtotal = monto * cantidad * plazo
       - IVA 16% SOLO si Entidad = FOCINE
       - FOCINE => FormaPago siempre EFECTIVO (forzado)
       - CENTRO => FormaPago siempre ESPECIE (forzado)
       - TipoPago PROYECTO => Plazo = 1 (forzado)
-   ✅ Exportar PDF (usa services/presupuestoPdfExport.js)
-   ✅ Carga masiva: pegar TSV/CSV + preview + agregar en lote
+  ✅ Exportar PDF (usa services/presupuestoPdfExport.js)
+  ✅ Carga masiva: pegar TSV/CSV + preview + agregar en lote
 
-   ✅ AJUSTE QUIRÚRGICO (NUEVO):
+  ✅ AJUSTE QUIRÚRGICO (NUEVO):
       - Selección múltiple en tabla (Ctrl/Cmd + click)
       - Shift + click selecciona rango (opcional, incluido)
       - Editar solo si hay 1 seleccionado
       - Eliminar si hay 1+ seleccionados
 
-   ✅ V2 - PRIMER CAMBIO (PUNTUAL):
+  ✅ V2 - PRIMER CAMBIO (PUNTUAL):
       - ELIMINAR POR COMPLETO "CARTAS" Y "COTIZACIONES" DEL PRESUPUESTO
         * Sin columnas COT/CARTA
         * Sin inputs de archivo
         * Sin campos cot/carta en datos, CSV ni carga masiva
 
-   ✅ FIX QUIRÚRGICO:
+  ✅ FIX QUIRÚRGICO:
       - Evitar crash: saveInFlight debe existir ANTES del primer renderAll()
+
+  ✅ NUEVO (AJUSTE QUIRÚRGICO SOLICITADO):
+      - Barra de búsqueda (texto) para coincidencias en gastos (Concepto / Cuenta / Entidad / Etapa)
+      - Filtro simple para visualización (Etapa: Todas + PRE/PROD/POST)
+      - Paginado en “pestaña” (20 en 20) + botón “Ver todos”
 ========================================================= */
 
 import { exportarPresupuestoPDF } from "../services/presupuestoPdfExport.js";
 import { loadModuleState, saveModuleState } from "../services/stateService.js";
 
-
 /* =========================================================
-   ✅ CAMBIO QUIRÚRGICO:
-   Exponer función global para que Documentación pueda abrir
-   la vista previa de Presupuesto igual que Ruta Crítica.
+  ✅ CAMBIO QUIRÚRGICO:
+  Exponer función global para que Documentación pueda abrir
+  la vista previa de Presupuesto igual que Ruta Crítica.
 ========================================================= */
 if (typeof window !== "undefined") {
   window.openPresupuestoPreview = function () {
-    try { exportarPresupuestoPDF(); }
-    catch (e) { alert(e?.message || String(e)); }
+    try {
+      exportarPresupuestoPDF();
+    } catch (e) {
+      alert(e?.message || String(e));
+    }
   };
 }
 
@@ -97,6 +104,11 @@ export function renderPresupuestoView() {
     (e) => `<option value="${escapeAttr(e)}">${escapeHtml(e)}</option>`
   ).join("");
 
+  const filtroEtapasOptions = [
+    `<option value="">Todas las etapas</option>`,
+    ...ETAPAS.map((e) => `<option value="${escapeAttr(e)}">${escapeHtml(e)}</option>`),
+  ].join("");
+
   return `
     <div class="grid">
       <div class="card">
@@ -143,6 +155,34 @@ export function renderPresupuestoView() {
     <div class="card mt">
       <h2>Desglose</h2>
       <p class="muted">Tip: Ctrl/Cmd + click para seleccionar varios. Shift + click para rango.</p>
+
+      <!-- ✅ NUEVO: Buscador + filtro + pestañas (paginado / todos) -->
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:10px 0 12px;">
+        <div style="flex:1; min-width:220px;">
+          <input id="bgSearchInput" type="text" placeholder="Buscar (concepto, cuenta, entidad, etapa)…"
+                 style="width:100%; padding:10px 12px; border-radius:12px; border:1px solid rgba(0,0,0,.12); outline:none;" />
+        </div>
+
+        <div style="min-width:220px;">
+          <select id="bgFilterEtapa" style="width:100%; padding:10px 12px; border-radius:12px; border:1px solid rgba(0,0,0,.12);">
+            ${filtroEtapasOptions}
+          </select>
+        </div>
+
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button id="bgTabPaged" class="btn btn-light">Paginado (20)</button>
+          <button id="bgTabAll" class="btn btn-light">Ver todos</button>
+        </div>
+      </div>
+
+      <!-- ✅ NUEVO: Controles paginado -->
+      <div id="bgPagerBar" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:-2px 0 10px;">
+        <button id="bgPagePrev" class="btn btn-light">←</button>
+        <div class="muted" id="bgPageInfo">Página 1 / 1</div>
+        <button id="bgPageNext" class="btn btn-light">→</button>
+        <div style="flex:1"></div>
+        <div class="muted" id="bgResultsInfo">0 resultados</div>
+      </div>
 
       <div class="table-wrap">
         <table class="table" id="budgetTable">
@@ -259,7 +299,6 @@ export function renderPresupuestoView() {
             <b>ETAPA | CONCEPTO | CUENTA | ENTIDAD | FORMA_PAGO | TIPO_PAGO | MONTO | CANTIDAD | PLAZO</b>
           </p>
 
-          
           <div class="rc-actions" style="margin:10px 0 10px; gap:10px; flex-wrap:wrap;">
             <input id="bgBulkFile" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
             <button id="bgBulkLoadFile" class="btn btn-light" type="button">Cargar archivo (CSV/XLSX)</button>
@@ -269,7 +308,7 @@ export function renderPresupuestoView() {
             </div>
           </div>
 
-<textarea id="bgBulkText" style="width:100%; height:160px; resize:vertical;"
+          <textarea id="bgBulkText" style="width:100%; height:160px; resize:vertical;"
 placeholder="ETAPA	CONCEPTO	CUENTA	ENTIDAD	FORMA_PAGO	TIPO_PAGO	MONTO	CANTIDAD	PLAZO
 PREPRODUCCIÓN	Renta cámara	PERSONAL DE CÁMARA	FOCINE	EFECTIVO	DIA	5000	1	3"></textarea>
 
@@ -322,6 +361,17 @@ export async function bindPresupuestoEvents() {
   const btnExportarPDF = document.getElementById("bgBtnExportarPDF");
   const btnCargaMasiva = document.getElementById("bgBtnCargaMasiva");
 
+  // ✅ NUEVO: UI buscador/filtro/paginado
+  const inpSearch = document.getElementById("bgSearchInput");
+  const selFilterEtapa = document.getElementById("bgFilterEtapa");
+  const btnTabPaged = document.getElementById("bgTabPaged");
+  const btnTabAll = document.getElementById("bgTabAll");
+  const pagerBar = document.getElementById("bgPagerBar");
+  const btnPagePrev = document.getElementById("bgPagePrev");
+  const btnPageNext = document.getElementById("bgPageNext");
+  const pageInfo = document.getElementById("bgPageInfo");
+  const resultsInfo = document.getElementById("bgResultsInfo");
+
   // Modal crear/editar
   const modalBackdrop = document.getElementById("bgModalBackdrop");
   const modalTitle = document.getElementById("bgModalTitle");
@@ -348,7 +398,7 @@ export async function bindPresupuestoEvents() {
   const bulkFile = document.getElementById("bgBulkFile");
   const bulkLoadFile = document.getElementById("bgBulkLoadFile");
   const bulkTemplate = document.getElementById("bgBulkTemplate");
-    const bulkPreview = document.getElementById("bgBulkPreview");
+  const bulkPreview = document.getElementById("bgBulkPreview");
   const bulkCommit = document.getElementById("bgBulkCommit");
   const bulkErrors = document.getElementById("bgBulkErrors");
   const bulkTbody = document.getElementById("bgBulkTbody");
@@ -372,8 +422,8 @@ export async function bindPresupuestoEvents() {
   }
 
   /* =========================================================
-     ✅ FIX QUIRÚRGICO:
-     Declarar saveInFlight ANTES del primer renderAll()
+    ✅ FIX QUIRÚRGICO:
+    Declarar saveInFlight ANTES del primer renderAll()
   ========================================================= */
   let saveInFlight = Promise.resolve();
 
@@ -410,6 +460,21 @@ export async function bindPresupuestoEvents() {
   // bulk state
   let bulkParsed = [];
 
+  // ✅ NUEVO: estado UI (filtro/busqueda/paginado)
+  const PAGE_SIZE = 20;
+  let uiSearch = "";
+  let uiFilterEtapa = ""; // "" => todas
+  let uiViewAll = false; // false => paginado (20)
+  let uiPage = 0; // 0-based
+
+  // init pestañas UI
+  if (btnTabPaged && btnTabAll) {
+    setTabButtons();
+  }
+  if (pagerBar) {
+    pagerBar.style.display = uiViewAll ? "none" : "flex";
+  }
+
   renderAll();
 
   // Acciones
@@ -419,10 +484,14 @@ export async function bindPresupuestoEvents() {
   btnDescargar.addEventListener("click", downloadCSV);
 
   btnExportarPDF.addEventListener("click", () => {
-    try { window.openPresupuestoPreview(); }
-    catch (e) {
-      try { exportarPresupuestoPDF(); }
-      catch (err) { alert(err?.message || String(err)); }
+    try {
+      window.openPresupuestoPreview();
+    } catch (e) {
+      try {
+        exportarPresupuestoPDF();
+      } catch (err) {
+        alert(err?.message || String(err));
+      }
     }
   });
 
@@ -430,18 +499,24 @@ export async function bindPresupuestoEvents() {
   btnCargaMasiva.addEventListener("click", openBulkModal);
   bulkClose.addEventListener("click", closeBulkModal);
   bulkCancel.addEventListener("click", closeBulkModal);
-  bulkBackdrop.addEventListener("click", (e) => { if (e.target === bulkBackdrop) closeBulkModal(); });
+  bulkBackdrop.addEventListener("click", (e) => {
+    if (e.target === bulkBackdrop) closeBulkModal();
+  });
   bulkPreview.addEventListener("click", previewBulk);
   bulkCommit.addEventListener("click", commitBulk);
 
   // ✅ Importar desde archivo (CSV/XLSX)
-  bulkLoadFile?.addEventListener("click", () => { void loadBulkFromFile(); });
+  bulkLoadFile?.addEventListener("click", () => {
+    void loadBulkFromFile();
+  });
   bulkTemplate?.addEventListener("click", downloadBulkTemplateCSV);
 
   // Modal create/edit
   modalClose.addEventListener("click", closeModal);
   modalCancel.addEventListener("click", closeModal);
-  modalBackdrop.addEventListener("click", (e) => { if (e.target === modalBackdrop) closeModal(); });
+  modalBackdrop.addEventListener("click", (e) => {
+    if (e.target === modalBackdrop) closeModal();
+  });
   modalSave.addEventListener("click", saveModal);
 
   selEntidad.addEventListener("change", applyEntidadRulesToModal);
@@ -450,6 +525,68 @@ export async function bindPresupuestoEvents() {
   inpMonto.addEventListener("blur", () => clampInput(inpMonto, 0.01, false));
   inpCantidad.addEventListener("blur", () => clampInput(inpCantidad, 1, true));
   inpPlazo.addEventListener("blur", () => clampInput(inpPlazo, 1, true));
+
+  // ✅ NUEVO: buscador + filtro + pestañas + paginado
+  inpSearch?.addEventListener("input", () => {
+    uiSearch = (inpSearch.value || "").trim();
+    uiPage = 0;
+    renderTable();
+  });
+
+  selFilterEtapa?.addEventListener("change", () => {
+    uiFilterEtapa = (selFilterEtapa.value || "").trim();
+    uiPage = 0;
+    renderTable();
+  });
+
+  btnTabPaged?.addEventListener("click", () => {
+    uiViewAll = false;
+    uiPage = 0;
+    setTabButtons();
+    if (pagerBar) pagerBar.style.display = "flex";
+    renderTable();
+  });
+
+  btnTabAll?.addEventListener("click", () => {
+    uiViewAll = true;
+    uiPage = 0;
+    setTabButtons();
+    if (pagerBar) pagerBar.style.display = "none";
+    renderTable();
+  });
+
+  btnPagePrev?.addEventListener("click", () => {
+    uiPage = Math.max(0, uiPage - 1);
+    renderTable();
+  });
+
+  btnPageNext?.addEventListener("click", () => {
+    const { totalPages } = getFilteredAndPagedItems();
+    uiPage = Math.min(Math.max(0, totalPages - 1), uiPage + 1);
+    renderTable();
+  });
+
+  function setTabButtons() {
+    // Mantenerlo simple, sin depender de CSS global
+    if (!btnTabPaged || !btnTabAll) return;
+    const on = (btn) => {
+      btn.style.border = "1px solid rgba(0,0,0,.12)";
+      btn.style.fontWeight = "900";
+      btn.style.opacity = "1";
+    };
+    const off = (btn) => {
+      btn.style.border = "1px solid rgba(0,0,0,.10)";
+      btn.style.fontWeight = "700";
+      btn.style.opacity = ".75";
+    };
+    if (uiViewAll) {
+      off(btnTabPaged);
+      on(btnTabAll);
+    } else {
+      on(btnTabPaged);
+      off(btnTabAll);
+    }
+  }
 
   function normalizeEtapa(v) {
     const s = norm(v);
@@ -609,9 +746,59 @@ export async function bindPresupuestoEvents() {
     summaryTbody.appendChild(trTotal);
   }
 
+  // ✅ NUEVO: obtiene items filtrados + paginados (sin alterar items)
+  function getFilteredAndPagedItems() {
+    const q = norm(uiSearch);
+    const etapaFilter = (uiFilterEtapa || "").trim();
+
+    const filtered = items.filter((it) => {
+      if (etapaFilter && it.etapa !== etapaFilter) return false;
+
+      if (!q) return true;
+
+      const hay = [
+        it.concepto,
+        it.cuenta,
+        it.entidad,
+        it.etapa,
+        it.formaPago,
+        it.tipoPago,
+      ]
+        .filter(Boolean)
+        .map(norm)
+        .join(" | ");
+
+      return hay.includes(q);
+    });
+
+    const total = filtered.length;
+
+    if (uiViewAll) {
+      return {
+        filtered,
+        pageItems: filtered,
+        total,
+        totalPages: 1,
+        page: 0,
+      };
+    }
+
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const safePage = Math.max(0, Math.min(uiPage, totalPages - 1));
+    uiPage = safePage;
+
+    const start = safePage * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    const pageItems = filtered.slice(start, end);
+
+    return { filtered, pageItems, total, totalPages, page: safePage };
+  }
+
   function renderTable() {
+    const { pageItems, total, totalPages, page } = getFilteredAndPagedItems();
+
     tbody.innerHTML = "";
-    items.forEach((it) => {
+    pageItems.forEach((it) => {
       const tr = document.createElement("tr");
       tr.dataset.uid = it.uid;
 
@@ -632,19 +819,32 @@ export async function bindPresupuestoEvents() {
         <td><b>${money(it.total)}</b></td>
       `;
 
-      tr.addEventListener("click", (ev) => onRowClick(ev, it.uid));
+      tr.addEventListener("click", (ev) => onRowClick(ev, it.uid, pageItems));
       tbody.appendChild(tr);
     });
+
+    // ✅ UI: page info + results
+    if (resultsInfo) resultsInfo.textContent = `${total} resultado${total === 1 ? "" : "s"}`;
+
+    if (uiViewAll) {
+      if (pageInfo) pageInfo.textContent = `Mostrando todos (${total})`;
+      if (btnPagePrev) btnPagePrev.disabled = true;
+      if (btnPageNext) btnPageNext.disabled = true;
+    } else {
+      if (pageInfo) pageInfo.textContent = `Página ${page + 1} / ${totalPages}`;
+      if (btnPagePrev) btnPagePrev.disabled = page <= 0;
+      if (btnPageNext) btnPageNext.disabled = page >= totalPages - 1;
+    }
 
     syncButtons();
   }
 
-  function onRowClick(ev, uid) {
+  function onRowClick(ev, uid, visibleItems) {
     const isToggle = ev.ctrlKey || ev.metaKey;
     const isRange = ev.shiftKey;
 
     if (isRange && lastClickedUid) {
-      selectRange(lastClickedUid, uid);
+      selectRange(lastClickedUid, uid, visibleItems);
       return;
     }
 
@@ -663,10 +863,13 @@ export async function bindPresupuestoEvents() {
     syncButtons();
   }
 
-  function selectRange(fromUid, toUid) {
-    const rowUids = items.map((x) => x.uid);
+  // ✅ rango en el contexto visible (página actual / tabla actual)
+  function selectRange(fromUid, toUid, visibleItems) {
+    const rowUids = (visibleItems || []).map((x) => x.uid);
     const a = rowUids.indexOf(fromUid);
     const b = rowUids.indexOf(toUid);
+
+    // Si no están ambos visibles, cae al comportamiento original (solo toUid)
     if (a === -1 || b === -1) {
       selectedUids = new Set([toUid]);
       lastClickedUid = toUid;
@@ -935,8 +1138,19 @@ export async function bindPresupuestoEvents() {
 
   function downloadCSV() {
     const headers = [
-      "folio","etapa","concepto","cuenta","entidad","formaPago","tipoPago",
-      "monto","cantidad","plazo","subtotal","iva","total"
+      "folio",
+      "etapa",
+      "concepto",
+      "cuenta",
+      "entidad",
+      "formaPago",
+      "tipoPago",
+      "monto",
+      "cantidad",
+      "plazo",
+      "subtotal",
+      "iva",
+      "total",
     ];
     const rows = items.map((it) => headers.map((h) => csvEscape(it[h] ?? "")).join(","));
     const csv = [headers.join(","), ...rows].join("\n");
@@ -991,8 +1205,8 @@ export async function bindPresupuestoEvents() {
   }
 
   function downloadBulkTemplateCSV() {
-    const headers = ["ETAPA","CONCEPTO","CUENTA","ENTIDAD","FORMA_PAGO","TIPO_PAGO","MONTO","CANTIDAD","PLAZO"];
-    const sample = ["PREPRODUCCIÓN","Renta cámara","PERSONAL DE CÁMARA","FOCINE","EFECTIVO","DIA","5000","1","3"];
+    const headers = ["ETAPA", "CONCEPTO", "CUENTA", "ENTIDAD", "FORMA_PAGO", "TIPO_PAGO", "MONTO", "CANTIDAD", "PLAZO"];
+    const sample = ["PREPRODUCCIÓN", "Renta cámara", "PERSONAL DE CÁMARA", "FOCINE", "EFECTIVO", "DIA", "5000", "1", "3"];
     const csv = [headers.join(","), sample.join(",")].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -1006,14 +1220,15 @@ export async function bindPresupuestoEvents() {
   }
 
   function rowsToTSV(rows, includeHeader) {
-    const header = ["ETAPA","CONCEPTO","CUENTA","ENTIDAD","FORMA_PAGO","TIPO_PAGO","MONTO","CANTIDAD","PLAZO"];
+    const header = ["ETAPA", "CONCEPTO", "CUENTA", "ENTIDAD", "FORMA_PAGO", "TIPO_PAGO", "MONTO", "CANTIDAD", "PLAZO"];
     const lines = [];
     if (includeHeader) lines.push(header.join("\t"));
     for (const r of rows) {
-      lines.push([
-        r.etapa, r.concepto, r.cuenta, r.entidad, r.formaPago, r.tipoPago,
-        String(r.monto), String(r.cantidad), String(r.plazo)
-      ].join("\t"));
+      lines.push(
+        [r.etapa, r.concepto, r.cuenta, r.entidad, r.formaPago, r.tipoPago, String(r.monto), String(r.cantidad), String(r.plazo)].join(
+          "\t"
+        )
+      );
     }
     return lines.join("\n");
   }
@@ -1028,7 +1243,6 @@ export async function bindPresupuestoEvents() {
     const grid = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
 
     // encontrar encabezado
-    const wanted = ["ETAPA","CONCEPTO","CUENTA","ENTIDAD","FORMA","TIPO PAGO","MONTO","CANTIDAD","PLAZO"];
     let headerRowIdx = -1;
     let colIdx = {};
 
@@ -1038,7 +1252,9 @@ export async function bindPresupuestoEvents() {
       if (hit) {
         headerRowIdx = i;
         const map = {};
-        row.forEach((h, j) => { if (h) map[h] = j; });
+        row.forEach((h, j) => {
+          if (h) map[h] = j;
+        });
         colIdx = map;
         break;
       }
@@ -1066,7 +1282,7 @@ export async function bindPresupuestoEvents() {
       const cantidad = get(row, "CANTIDAD");
       const plazo = get(row, "PLAZO");
 
-      const allEmpty = [etapa,concepto,cuenta,entidad,forma,tipo,monto,cantidad,plazo].every((x)=>!x);
+      const allEmpty = [etapa, concepto, cuenta, entidad, forma, tipo, monto, cantidad, plazo].every((x) => !x);
       if (allEmpty) continue;
 
       out.push({
@@ -1082,17 +1298,15 @@ export async function bindPresupuestoEvents() {
       });
     }
 
-    return mapRowsToBudgetLayout([[
-      "ETAPA","CONCEPTO","CUENTA","ENTIDAD","FORMA_PAGO","TIPO_PAGO","MONTO","CANTIDAD","PLAZO"
-    ], ...out.map(o=>[
-      o.etapa,o.concepto,o.cuenta,o.entidad,o.formaPago,o.tipoPago,o.monto,o.cantidad,o.plazo
-    ])]);
+    return mapRowsToBudgetLayout([
+      ["ETAPA", "CONCEPTO", "CUENTA", "ENTIDAD", "FORMA_PAGO", "TIPO_PAGO", "MONTO", "CANTIDAD", "PLAZO"],
+      ...out.map((o) => [o.etapa, o.concepto, o.cuenta, o.entidad, o.formaPago, o.tipoPago, o.monto, o.cantidad, o.plazo]),
+    ]);
   }
 
   function parseCSVToRows(text) {
     const s = (text || "").replace(/^\uFEFF/, ""); // BOM
-    // detectar separador (coma vs punto y coma) en la primera línea (fuera de comillas)
-    const firstLine = (s.split(/\r?\n/)[0] || "");
+    const firstLine = s.split(/\r?\n/)[0] || "";
     const sep = detectCsvSeparator(firstLine);
 
     const rows = [];
@@ -1145,14 +1359,13 @@ export async function bindPresupuestoEvents() {
     row.push(cur.trim());
     rows.push(row);
 
-    // remove empty trailing rows
-    return rows.filter(r => r.some(c => (c ?? "").toString().trim() !== ""));
+    return rows.filter((r) => r.some((c) => (c ?? "").toString().trim() !== ""));
   }
 
   function detectCsvSeparator(line) {
-    // cuenta separadores fuera de comillas
     let inQ = false;
-    let comma = 0, semi = 0;
+    let comma = 0,
+      semi = 0;
     for (let i = 0; i < (line || "").length; i++) {
       const ch = line[i];
       if (ch === '"') inQ = !inQ;
@@ -1170,10 +1383,11 @@ export async function bindPresupuestoEvents() {
     const hasHeader = header.includes("ETAPA") || header.includes("CONCEPTO");
     const start = hasHeader ? 1 : 0;
 
-    // map de índices por encabezado
     const idx = {};
     if (hasHeader) {
-      header.forEach((h, i) => { if (h) idx[h] = i; });
+      header.forEach((h, i) => {
+        if (h) idx[h] = i;
+      });
     }
 
     const get = (r, key, fallbackIndex) => {
@@ -1190,7 +1404,6 @@ export async function bindPresupuestoEvents() {
       const cuenta = get(r, "CUENTA", 2);
       const entidad = get(r, "ENTIDAD", 3);
 
-      // aceptamos "FORMA" (xlsx) o "FORMA_PAGO"
       const formaPago = get(r, "FORMA_PAGO", 4) || get(r, "FORMA", 4);
       const tipoPago = get(r, "TIPO_PAGO", 5) || get(r, "TIPO PAGO", 5) || get(r, "TIPO", 5);
 
@@ -1198,7 +1411,7 @@ export async function bindPresupuestoEvents() {
       const cantidad = get(r, "CANTIDAD", 7);
       const plazo = get(r, "PLAZO", 8);
 
-      const allEmpty = [etapa,concepto,cuenta,entidad,formaPago,tipoPago,monto,cantidad,plazo].every((x)=>!x);
+      const allEmpty = [etapa, concepto, cuenta, entidad, formaPago, tipoPago, monto, cantidad, plazo].every((x) => !x);
       if (allEmpty) continue;
 
       out.push({
@@ -1319,7 +1532,10 @@ export async function bindPresupuestoEvents() {
   }
 
   function parseBulkText(text) {
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
     const sep = lines.some((l) => l.includes("\t")) ? "\t" : ",";
     const rows = lines.map((l) => l.split(sep).map((c) => c.trim()));
 
@@ -1366,9 +1582,9 @@ export async function bindPresupuestoEvents() {
       if (!Number.isFinite(plazo) || plazo < 1) errors.push(`Fila ${rowNum}: PLAZO debe ser >= 1.`);
 
       const formaPago = applyFormaRules(entidad, formaRaw || "EFECTIVO");
-      const fixedPlazo = (tipoPago === "PROYECTO") ? 1 : plazo;
+      const fixedPlazo = tipoPago === "PROYECTO" ? 1 : plazo;
 
-      const thisRowHasError = errors.some(e => e.startsWith(`Fila ${rowNum}:`));
+      const thisRowHasError = errors.some((e) => e.startsWith(`Fila ${rowNum}:`));
       if (!thisRowHasError) {
         itemsOut.push({
           etapa,
@@ -1391,9 +1607,11 @@ export async function bindPresupuestoEvents() {
 }
 
 /* =======================
-   Helpers globales
+  Helpers globales
 ======================= */
-function round2(n) { return Math.round(n * 100) / 100; }
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
 
 function toPositiveNumber(v, min) {
   const s = (v ?? "").toString().replace(/[$,]/g, "").trim();
@@ -1430,4 +1648,3 @@ function norm(s) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
 }
-

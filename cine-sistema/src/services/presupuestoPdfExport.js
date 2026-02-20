@@ -16,6 +16,10 @@
    - Soporta:
      * V1: dataUrl/base64/url en localStorage
      * V2: path en Supabase Storage (bucket uploads)
+
+   ✅ NUEVO AJUSTE QUIRÚRGICO (SOLICITADO AHORA):
+   - En la visualización del PDF/preview debe verse si el gasto es POR DÍA o POR PROYECTO.
+     => Se agrega columna "TIPO DE PAGO" (Por día / Por proyecto) en la tabla exportada.
 ========================================================= */
 
 import { supabase } from "./supabase.js";
@@ -267,7 +271,6 @@ function stampLogoOnPage(pdf, imgData, logoWpt, logoHpt, opts = {}) {
   const y = margin - topInset;
   pdf.addImage(imgData, opts.format || "PNG", x, Math.max(6, y), logoWpt, logoHpt, undefined, "FAST");
 }
-
 
 // ✅ leer desde servidor (project_state) cuando Presupuesto ya no vive en localStorage (V2)
 async function readItemsFromServerState() {
@@ -671,6 +674,14 @@ function aportacionesFrom(row) {
 function buildPrintableHTML(rows, projectName, opts = {}) {
   const showActions = opts.showActions !== false;
 
+  // ✅ NUEVO: etiqueta legible para el tipo de pago
+  function labelTipoPago(raw) {
+    const t = norm(raw);
+    if (t === "DIA" || t === "DÍA") return "Por día";
+    if (t === "PROYECTO") return "Por proyecto";
+    return raw ? escapeHtml(raw) : "";
+  }
+
   const grouped = new Map();
   const etapaTotals = new Map();
 
@@ -729,25 +740,29 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 
   const renderEtapaBanner = (etapa) => {
     const c = COLORS.etapa[etapa];
+    // ✅ antes col=14, ahora col=15
     return `<tr class="etapa-banner" style="background:${c.bg}; color:${c.fg};">
-      <td colspan="14">${labelEtapa(etapa)}</td>
+      <td colspan="15">${labelEtapa(etapa)}</td>
     </tr>`;
   };
 
   const renderCuentaGroupRow = (etapa, numeroCuenta, cuentaNombre) => {
     const key = pickCuentaColorKey(etapa);
     const c = COLORS.cuenta[key];
+    // ✅ antes col=13, ahora col=14 (porque ahora hay 15 columnas total)
     return `<tr class="cuenta-group" style="background:${c.bg}; color:${c.fg};">
       <td class="code">${numeroCuenta}</td>
-      <td class="desc" colspan="13">${escapeHtml(cuentaNombre)}</td>
+      <td class="desc" colspan="14">${escapeHtml(cuentaNombre)}</td>
     </tr>`;
   };
 
   const renderSubtotalCuenta = (numeroCuenta, acc) => {
     const c = COLORS.subtotal;
+    // ✅ insertar una celda vacía para TIPO DE PAGO
     return `<tr class="subtotal" style="background:${c.bg}; color:${c.fg};">
       <td class="code"></td>
       <td class="desc">SUBTOTALES SUBCUENTA ${numeroCuenta}</td>
+      <td class="tipo"></td>
       <td class="num">${acc.cantidad}</td>
       <td class="num">${money(acc.monto)}</td>
       <td class="num">${acc.plazo}</td>
@@ -765,9 +780,10 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 
   const renderTotalEtapa = (etapa) => {
     const t = etapaTotals.get(etapa);
+    // ✅ antes colspan=4, ahora colspan=5 (desc + tipo + cant + costo + plazo)
     return `<tr class="grand">
       <td class="code"></td>
-      <td class="desc" colspan="4">GRAN TOTAL ${labelEtapa(etapa)}</td>
+      <td class="desc" colspan="5">GRAN TOTAL ${labelEtapa(etapa)}</td>
       <td class="num">${money(t.subtotal)}</td>
       <td class="num">${money(t.iva)}</td>
       <td class="num total-highlight">${money(t.total)}</td>
@@ -781,9 +797,10 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   };
 
   const renderGrandTotal = () => {
+    // ✅ antes colspan=4, ahora colspan=5
     return `<tr class="grand grand-final">
       <td class="code"></td>
-      <td class="desc" colspan="4">GRAN TOTAL</td>
+      <td class="desc" colspan="5">GRAN TOTAL</td>
       <td class="num">${money(grand.subtotal)}</td>
       <td class="num">${money(grand.iva)}</td>
       <td class="num total-highlight">${money(grand.total)}</td>
@@ -842,6 +859,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
           <tr class="item">
             <td class="code">${r.subcuenta}</td>
             <td class="desc">${escapeHtml(r.concepto)}</td>
+            <td class="tipo">${labelTipoPago(r.tipo)}</td>
 
             <td class="num">${r.cantidad}</td>
             <td class="num">${money(r.monto)}</td>
@@ -906,7 +924,8 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.code { text-align: center; width: 74px; font-weight: 800; }
-  td.desc { width: 460px; }
+  td.desc { width: 430px; }
+  td.tipo { text-align: center; width: 95px; font-weight: 800; }
 
   .etapa-banner td { text-align: center; font-weight: 900; letter-spacing: .5px; }
   .cuenta-group td { font-weight: 900; }
@@ -933,6 +952,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
       <tr>
         <th rowspan="2">CUENTA Y SUBCUENTA</th>
         <th rowspan="2">DESCRIPCIÓN</th>
+        <th rowspan="2">TIPO DE PAGO</th>
         <th rowspan="2">CANT.</th>
         <th rowspan="2">COSTO UNIDAD</th>
         <th rowspan="2">PLAZO</th>
@@ -1043,7 +1063,6 @@ export async function exportarPresupuestoPdfBytes({ projectName } = {}) {
   const html = buildPrintableHTML(rows, pName, { showActions: false });
   return await htmlToPdfBytes(html);
 }
-
 
 /* =========================================================
    HTML -> PDF bytes (html2canvas + jsPDF)
@@ -1190,4 +1209,3 @@ async function htmlToPdfBytes(html) {
     } catch {}
   }
 }
-

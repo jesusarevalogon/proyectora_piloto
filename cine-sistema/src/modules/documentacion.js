@@ -12,6 +12,11 @@
       - Si Supabase NO tiene estado para este módulo,
         intenta leer LS_DOCS ("DOCS_V1_ITEMS") y lo sube a Storage,
         guardando metadata en Supabase.
+
+   ✅ AJUSTE QUIRÚRGICO SOLICITADO:
+      - En Documentación solo se pueden subir PDFs o Imágenes
+      - Si intentan subir otro tipo: bloquear y mostrar alerta
+      - Logo mantiene su validación estricta (PNG/JPG/JPEG)
 ========================================================= */
 
 import { loadModuleState, saveModuleState } from "../services/stateService.js";
@@ -382,8 +387,9 @@ export function bindDocumentacionEvents() {
         pendingKey = key;
         fileInput.value = "";
 
+        // ✅ Candado: solo PDFs o imágenes (logo es caso especial)
         if (pendingKey === "logo_proyecto") fileInput.setAttribute("accept", "image/png,image/jpeg");
-        else fileInput.removeAttribute("accept");
+        else fileInput.setAttribute("accept", "application/pdf,image/*");
 
         fileInput.click();
         return;
@@ -426,6 +432,17 @@ export function bindDocumentacionEvents() {
       if (!file || !pendingKey) return;
 
       try {
+        // ✅ Candado general: solo PDF o imagen (excepto logo, que es más estricto)
+        if (pendingKey !== "logo_proyecto") {
+          const errGeneral = validatePdfOrImageOnly(file);
+          if (errGeneral) {
+            alert(errGeneral);
+            pendingKey = null;
+            fileInput.value = "";
+            return;
+          }
+        }
+
         // ✅ Logo: validación + modal preview obligatorio
         if (pendingKey === "logo_proyecto") {
           const err = validateLogoFileStrict(file);
@@ -708,6 +725,12 @@ export function bindDocumentacionEvents() {
       if (!supabase) throw new Error("Supabase no está inicializado.");
       if (!userId || !projectId) throw new Error("No hay sesión completa (userId/projectId).");
 
+      // ✅ Candado extra: doble validación antes de subir
+      if (docKey !== "logo_proyecto") {
+        const err = validatePdfOrImageOnly(file);
+        if (err) throw new Error(err);
+      }
+
       // Si ya existe un archivo para este docKey, intenta borrarlo (limpieza)
       const prev = store?.[docKey];
       if (prev?.path) {
@@ -913,6 +936,23 @@ export function bindDocumentacionEvents() {
       } catch {
         return "";
       }
+    }
+
+    // ✅ Candado general: SOLO PDF o Imagen (para todos excepto logo)
+    function validatePdfOrImageOnly(file) {
+      const mime = (file?.type || "").toLowerCase();
+      const name = (file?.name || "").toLowerCase();
+
+      const isPdf = mime === "application/pdf" || name.endsWith(".pdf");
+      const isImage =
+        (mime.startsWith("image/") && mime !== "image/svg+xml") ||
+        /\.(png|jpg|jpeg|gif|webp)$/i.test(name);
+
+      if (!isPdf && !isImage) {
+        return "Archivo inválido: en Documentación solo se permiten PDFs o imágenes (PNG/JPG/JPEG/GIF/WEBP).";
+      }
+
+      return null;
     }
 
     // ✅ Logo strict validation (PNG/JPG/JPEG only) + max 5MB

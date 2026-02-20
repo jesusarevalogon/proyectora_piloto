@@ -259,7 +259,17 @@ export function renderPresupuestoView() {
             <b>ETAPA | CONCEPTO | CUENTA | ENTIDAD | FORMA_PAGO | TIPO_PAGO | MONTO | CANTIDAD | PLAZO</b>
           </p>
 
-          <textarea id="bgBulkText" style="width:100%; height:160px; resize:vertical;"
+          
+          <div class="rc-actions" style="margin:10px 0 10px; gap:10px; flex-wrap:wrap;">
+            <input id="bgBulkFile" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+            <button id="bgBulkLoadFile" class="btn btn-light" type="button">Cargar archivo (CSV/XLSX)</button>
+            <button id="bgBulkTemplate" class="btn btn-light" type="button">Descargar plantilla CSV</button>
+            <div class="muted" style="flex:1; min-width:220px;">
+              Tip: para evitar que “se corran” columnas, usa la plantilla XLSX con listas o importa CSV desde archivo.
+            </div>
+          </div>
+
+<textarea id="bgBulkText" style="width:100%; height:160px; resize:vertical;"
 placeholder="ETAPA	CONCEPTO	CUENTA	ENTIDAD	FORMA_PAGO	TIPO_PAGO	MONTO	CANTIDAD	PLAZO
 PREPRODUCCIÓN	Renta cámara	PERSONAL DE CÁMARA	FOCINE	EFECTIVO	DIA	5000	1	3"></textarea>
 
@@ -335,7 +345,10 @@ export async function bindPresupuestoEvents() {
   const bulkClose = document.getElementById("bgBulkClose");
   const bulkCancel = document.getElementById("bgBulkCancel");
   const bulkText = document.getElementById("bgBulkText");
-  const bulkPreview = document.getElementById("bgBulkPreview");
+  const bulkFile = document.getElementById("bgBulkFile");
+  const bulkLoadFile = document.getElementById("bgBulkLoadFile");
+  const bulkTemplate = document.getElementById("bgBulkTemplate");
+    const bulkPreview = document.getElementById("bgBulkPreview");
   const bulkCommit = document.getElementById("bgBulkCommit");
   const bulkErrors = document.getElementById("bgBulkErrors");
   const bulkTbody = document.getElementById("bgBulkTbody");
@@ -420,6 +433,10 @@ export async function bindPresupuestoEvents() {
   bulkBackdrop.addEventListener("click", (e) => { if (e.target === bulkBackdrop) closeBulkModal(); });
   bulkPreview.addEventListener("click", previewBulk);
   bulkCommit.addEventListener("click", commitBulk);
+
+  // ✅ Importar desde archivo (CSV/XLSX)
+  bulkLoadFile?.addEventListener("click", () => { void loadBulkFromFile(); });
+  bulkTemplate?.addEventListener("click", downloadBulkTemplateCSV);
 
   // Modal create/edit
   modalClose.addEventListener("click", closeModal);
@@ -935,6 +952,271 @@ export async function bindPresupuestoEvents() {
     URL.revokeObjectURL(url);
   }
 
+  async function loadBulkFromFile() {
+    const file = bulkFile?.files?.[0];
+    if (!file) {
+      alert("Selecciona un archivo .CSV o .XLSX");
+      return;
+    }
+
+    const name = (file.name || "").toLowerCase();
+    const isXlsx = name.endsWith(".xlsx") || name.endsWith(".xlsm") || name.endsWith(".xls");
+
+    try {
+      if (isXlsx) {
+        const buf = await file.arrayBuffer();
+        const rows = await parseXlsxBudgetRows(buf);
+        if (!rows.length) {
+          alert("El archivo no contiene filas válidas en la hoja 'layout'.");
+          return;
+        }
+        bulkText.value = rowsToTSV(rows, true);
+        previewBulk();
+        return;
+      }
+
+      // CSV
+      const text = await file.text();
+      const rows = parseCSVToRows(text);
+      const normed = mapRowsToBudgetLayout(rows);
+      if (!normed.length) {
+        alert("El CSV no contiene filas válidas (revisa encabezados y datos).");
+        return;
+      }
+      bulkText.value = rowsToTSV(normed, true);
+      previewBulk();
+    } catch (e) {
+      alert(e?.message || String(e));
+    }
+  }
+
+  function downloadBulkTemplateCSV() {
+    const headers = ["ETAPA","CONCEPTO","CUENTA","ENTIDAD","FORMA_PAGO","TIPO_PAGO","MONTO","CANTIDAD","PLAZO"];
+    const sample = ["PREPRODUCCIÓN","Renta cámara","PERSONAL DE CÁMARA","FOCINE","EFECTIVO","DIA","5000","1","3"];
+    const csv = [headers.join(","), sample.join(",")].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "plantilla_presupuesto.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function rowsToTSV(rows, includeHeader) {
+    const header = ["ETAPA","CONCEPTO","CUENTA","ENTIDAD","FORMA_PAGO","TIPO_PAGO","MONTO","CANTIDAD","PLAZO"];
+    const lines = [];
+    if (includeHeader) lines.push(header.join("\t"));
+    for (const r of rows) {
+      lines.push([
+        r.etapa, r.concepto, r.cuenta, r.entidad, r.formaPago, r.tipoPago,
+        String(r.monto), String(r.cantidad), String(r.plazo)
+      ].join("\t"));
+    }
+    return lines.join("\n");
+  }
+
+  async function parseXlsxBudgetRows(arrayBuffer) {
+    // SheetJS (XLSX) ESM CDN
+    const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
+
+    const wb = XLSX.read(arrayBuffer, { type: "array" });
+    const sheetName = wb.SheetNames.includes("layout") ? "layout" : wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    const grid = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+
+    // encontrar encabezado
+    const wanted = ["ETAPA","CONCEPTO","CUENTA","ENTIDAD","FORMA","TIPO PAGO","MONTO","CANTIDAD","PLAZO"];
+    let headerRowIdx = -1;
+    let colIdx = {};
+
+    for (let i = 0; i < Math.min(20, grid.length); i++) {
+      const row = (grid[i] || []).map((v) => norm(v));
+      const hit = row.includes("ETAPA") && row.includes("CONCEPTO") && row.includes("CUENTA");
+      if (hit) {
+        headerRowIdx = i;
+        const map = {};
+        row.forEach((h, j) => { if (h) map[h] = j; });
+        colIdx = map;
+        break;
+      }
+    }
+
+    if (headerRowIdx === -1) return [];
+
+    const get = (row, key) => {
+      const j = colIdx[key];
+      if (j === undefined) return "";
+      return (row[j] ?? "").toString().trim();
+    };
+
+    const out = [];
+    for (let r = headerRowIdx + 1; r < grid.length; r++) {
+      const row = grid[r] || [];
+      const etapa = get(row, "ETAPA");
+      const concepto = get(row, "CONCEPTO");
+      const cuenta = get(row, "CUENTA");
+      const entidad = get(row, "ENTIDAD");
+      const forma = get(row, "FORMA");
+      const tipo = get(row, "TIPO PAGO") || get(row, "TIPO") || get(row, "TIPO_PAGO");
+
+      const monto = get(row, "MONTO");
+      const cantidad = get(row, "CANTIDAD");
+      const plazo = get(row, "PLAZO");
+
+      const allEmpty = [etapa,concepto,cuenta,entidad,forma,tipo,monto,cantidad,plazo].every((x)=>!x);
+      if (allEmpty) continue;
+
+      out.push({
+        etapa: etapa,
+        concepto: concepto,
+        cuenta: cuenta,
+        entidad: entidad,
+        formaPago: forma,
+        tipoPago: tipo,
+        monto: monto,
+        cantidad: cantidad || "1",
+        plazo: plazo || "1",
+      });
+    }
+
+    return mapRowsToBudgetLayout([[
+      "ETAPA","CONCEPTO","CUENTA","ENTIDAD","FORMA_PAGO","TIPO_PAGO","MONTO","CANTIDAD","PLAZO"
+    ], ...out.map(o=>[
+      o.etapa,o.concepto,o.cuenta,o.entidad,o.formaPago,o.tipoPago,o.monto,o.cantidad,o.plazo
+    ])]);
+  }
+
+  function parseCSVToRows(text) {
+    const s = (text || "").replace(/^\uFEFF/, ""); // BOM
+    // detectar separador (coma vs punto y coma) en la primera línea (fuera de comillas)
+    const firstLine = (s.split(/\r?\n/)[0] || "");
+    const sep = detectCsvSeparator(firstLine);
+
+    const rows = [];
+    let row = [];
+    let cur = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+
+      if (inQuotes) {
+        if (ch === '"') {
+          const next = s[i + 1];
+          if (next === '"') {
+            cur += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          cur += ch;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inQuotes = true;
+        continue;
+      }
+
+      if (ch === sep) {
+        row.push(cur.trim());
+        cur = "";
+        continue;
+      }
+
+      if (ch === "\n") {
+        row.push(cur.trim());
+        rows.push(row);
+        row = [];
+        cur = "";
+        continue;
+      }
+
+      if (ch === "\r") continue;
+
+      cur += ch;
+    }
+
+    row.push(cur.trim());
+    rows.push(row);
+
+    // remove empty trailing rows
+    return rows.filter(r => r.some(c => (c ?? "").toString().trim() !== ""));
+  }
+
+  function detectCsvSeparator(line) {
+    // cuenta separadores fuera de comillas
+    let inQ = false;
+    let comma = 0, semi = 0;
+    for (let i = 0; i < (line || "").length; i++) {
+      const ch = line[i];
+      if (ch === '"') inQ = !inQ;
+      if (inQ) continue;
+      if (ch === ",") comma++;
+      if (ch === ";") semi++;
+    }
+    return semi > comma ? ";" : ",";
+  }
+
+  function mapRowsToBudgetLayout(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+
+    const header = (rows[0] || []).map((h) => norm(h));
+    const hasHeader = header.includes("ETAPA") || header.includes("CONCEPTO");
+    const start = hasHeader ? 1 : 0;
+
+    // map de índices por encabezado
+    const idx = {};
+    if (hasHeader) {
+      header.forEach((h, i) => { if (h) idx[h] = i; });
+    }
+
+    const get = (r, key, fallbackIndex) => {
+      const i = idx[key];
+      const v = (i !== undefined ? r[i] : r[fallbackIndex]) ?? "";
+      return v.toString().trim();
+    };
+
+    const out = [];
+    for (let i = start; i < rows.length; i++) {
+      const r = rows[i] || [];
+      const etapa = get(r, "ETAPA", 0);
+      const concepto = get(r, "CONCEPTO", 1);
+      const cuenta = get(r, "CUENTA", 2);
+      const entidad = get(r, "ENTIDAD", 3);
+
+      // aceptamos "FORMA" (xlsx) o "FORMA_PAGO"
+      const formaPago = get(r, "FORMA_PAGO", 4) || get(r, "FORMA", 4);
+      const tipoPago = get(r, "TIPO_PAGO", 5) || get(r, "TIPO PAGO", 5) || get(r, "TIPO", 5);
+
+      const monto = get(r, "MONTO", 6);
+      const cantidad = get(r, "CANTIDAD", 7);
+      const plazo = get(r, "PLAZO", 8);
+
+      const allEmpty = [etapa,concepto,cuenta,entidad,formaPago,tipoPago,monto,cantidad,plazo].every((x)=>!x);
+      if (allEmpty) continue;
+
+      out.push({
+        etapa,
+        concepto,
+        cuenta,
+        entidad,
+        formaPago,
+        tipoPago,
+        monto,
+        cantidad: cantidad || "1",
+        plazo: plazo || "1",
+      });
+    }
+
+    return out;
+  }
+
   function openBulkModal() {
     bulkParsed = [];
     bulkTbody.innerHTML = "";
@@ -1148,3 +1430,4 @@ function norm(s) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
 }
+

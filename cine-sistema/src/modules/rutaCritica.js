@@ -25,6 +25,11 @@
       - Ordenadas por fecha inicio
 
    🔒 Sin localStorage: TODO vive en servidor.
+
+   ✅ NUEVO (AJUSTE QUIRÚRGICO SOLICITADO):
+      - Barra de búsqueda (texto) para coincidencias en tareas (Etapa / Tarea / Notas)
+      - Filtro simple de etapa (select) + respeta los botones "Vista"
+      - Paginado 20 en 20 + botón "Ver todas"
 ========================================================= */
 
 // ✅ CAMBIO QUIRÚRGICO: importar el service de vista previa tipo Excel
@@ -61,6 +66,11 @@ export function renderRutaCriticaView() {
     (e) => `<option value="${escapeAttr(e)}">${escapeHtml(e)}</option>`
   ).join("");
 
+  const filtroEtapasOptions = [
+    `<option value="">Todas las etapas</option>`,
+    ...ETAPAS.map((e) => `<option value="${escapeAttr(e)}">${escapeHtml(e)}</option>`),
+  ].join("");
+
   return `
     <div class="grid">
       <div class="card">
@@ -89,6 +99,34 @@ export function renderRutaCriticaView() {
           <button id="rcBtnCargaMasiva" class="btn btn-secondary">Carga masiva</button>
           <div style="flex:1;"></div>
           <div class="muted" id="rcFiltroLabel">Filtro: <b>todas</b></div>
+        </div>
+
+        <!-- ✅ NUEVO: Buscador + filtro + pestañas (paginado / todos) -->
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:10px 0 12px;">
+          <div style="flex:1; min-width:220px;">
+            <input id="rcSearchInput" type="text" placeholder="Buscar (etapa, tarea, notas)…"
+                   style="width:100%; padding:10px 12px; border-radius:12px; border:1px solid rgba(0,0,0,.12); outline:none;" />
+          </div>
+
+          <div style="min-width:220px;">
+            <select id="rcFilterEtapa" style="width:100%; padding:10px 12px; border-radius:12px; border:1px solid rgba(0,0,0,.12);">
+              ${filtroEtapasOptions}
+            </select>
+          </div>
+
+          <div style="display:flex; gap:8px; align-items:center;">
+            <button id="rcTabPaged" class="btn btn-light">Paginado (20)</button>
+            <button id="rcTabAll" class="btn btn-light">Ver todas</button>
+          </div>
+        </div>
+
+        <!-- ✅ NUEVO: Controles paginado -->
+        <div id="rcPagerBar" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:-2px 0 10px;">
+          <button id="rcPagePrev" class="btn btn-light">←</button>
+          <div class="muted" id="rcPageInfo">Página 1 / 1</div>
+          <button id="rcPageNext" class="btn btn-light">→</button>
+          <div style="flex:1"></div>
+          <div class="muted" id="rcResultsInfo">0 resultados</div>
         </div>
 
         <div class="table-wrap" style="margin-top:10px;">
@@ -272,6 +310,17 @@ export async function bindRutaCriticaEvents() {
 
   const filtroLabel = document.getElementById("rcFiltroLabel");
 
+  // ✅ NUEVO: UI buscador/filtro/paginado
+  const inpSearch = document.getElementById("rcSearchInput");
+  const selFilterEtapa = document.getElementById("rcFilterEtapa");
+  const btnTabPaged = document.getElementById("rcTabPaged");
+  const btnTabAll = document.getElementById("rcTabAll");
+  const pagerBar = document.getElementById("rcPagerBar");
+  const btnPagePrev = document.getElementById("rcPagePrev");
+  const btnPageNext = document.getElementById("rcPageNext");
+  const pageInfo = document.getElementById("rcPageInfo");
+  const resultsInfo = document.getElementById("rcResultsInfo");
+
   // Form tarea
   const selEtapa = document.getElementById("rcEtapa");
   const inpTarea = document.getElementById("rcTarea");
@@ -349,13 +398,15 @@ export async function bindRutaCriticaEvents() {
     const stagesIn = serverState?.stages;
     const tasksIn = serverState?.tasks;
 
-    const stagesOut = stagesIn ? {
-      dev: { ini: stagesIn?.dev?.ini || "", fin: stagesIn?.dev?.fin || "" },
-      pre: { ini: stagesIn?.pre?.ini || "", fin: stagesIn?.pre?.fin || "" },
-      rod: { ini: stagesIn?.rod?.ini || "", fin: stagesIn?.rod?.fin || "" },
-      edi: { ini: stagesIn?.edi?.ini || "", fin: stagesIn?.edi?.fin || "" },
-      post: { ini: stagesIn?.post?.ini || "", fin: stagesIn?.post?.fin || "" },
-    } : emptyStages();
+    const stagesOut = stagesIn
+      ? {
+          dev: { ini: stagesIn?.dev?.ini || "", fin: stagesIn?.dev?.fin || "" },
+          pre: { ini: stagesIn?.pre?.ini || "", fin: stagesIn?.pre?.fin || "" },
+          rod: { ini: stagesIn?.rod?.ini || "", fin: stagesIn?.rod?.fin || "" },
+          edi: { ini: stagesIn?.edi?.ini || "", fin: stagesIn?.edi?.fin || "" },
+          post: { ini: stagesIn?.post?.ini || "", fin: stagesIn?.post?.fin || "" },
+        }
+      : emptyStages();
 
     const tasksOut = Array.isArray(tasksIn) ? tasksIn : [];
     return { stagesOut, tasksOut };
@@ -372,8 +423,11 @@ export async function bindRutaCriticaEvents() {
   let saveInFlight = Promise.resolve();
 
   function cloneSafe(obj) {
-    try { return structuredClone(obj); }
-    catch { return JSON.parse(JSON.stringify(obj)); }
+    try {
+      return structuredClone(obj);
+    } catch {
+      return JSON.parse(JSON.stringify(obj));
+    }
   }
 
   function queueSaveToServer() {
@@ -395,29 +449,45 @@ export async function bindRutaCriticaEvents() {
     pendingPayload = null;
 
     saveInFlight = saveInFlight
-      .then(() => saveModuleState({
-        userId,
-        projectId,
-        moduleKey: MODULE_KEY,
-        data: payload,
-      }))
+      .then(() =>
+        saveModuleState({
+          userId,
+          projectId,
+          moduleKey: MODULE_KEY,
+          data: payload,
+        })
+      )
       .catch((e) => {
         console.error("[rutaCritica] saveModuleState failed:", e);
       });
   }
 
   // compat: mismas firmas que antes
-  function saveStages() { queueSaveToServer(); }
-  function saveTasks() { queueSaveToServer(); }
+  function saveStages() {
+    queueSaveToServer();
+  }
+  function saveTasks() {
+    queueSaveToServer();
+  }
 
   // ---- State ----
   let stages = emptyStages(); // {dev:{ini,fin}, pre:{ini,fin}, rod:{ini,fin}, edi:{ini,fin}, post:{ini,fin}}
-  let tasks = [];            // [{uid, etapa, tarea, ini, fin, notas, createdAt, updatedAt}]
-  let filter = null;         // null = todas, else etapaLabel
+  let tasks = []; // [{uid, etapa, tarea, ini, fin, notas, createdAt, updatedAt}]
+  let filter = null; // null = todas, else etapaLabel
   let selectedUid = null;
   let selectedSet = new Set(); // multi-select by uid
-  let formMode = "create";      // create/edit
+  let formMode = "create"; // create/edit
   let bulkParsed = [];
+
+  // ✅ NUEVO: estado UI (busqueda / filtro select / paginado)
+  const PAGE_SIZE = 20;
+  let uiSearch = "";
+  let uiFilterEtapa = ""; // "" => todas
+  let uiViewAll = false; // false => paginado (20)
+  let uiPage = 0; // 0-based
+
+  if (pagerBar) pagerBar.style.display = uiViewAll ? "none" : "flex";
+  setTabButtons();
 
   // ---- Init: cargar server ----
   try {
@@ -498,6 +568,17 @@ export async function bindRutaCriticaEvents() {
     saveTasks();
     flushSaveToServer(); // ✅ inmediato al limpiar
     hydrateStageInputsFromState();
+
+    // ✅ reset UI listado
+    uiSearch = "";
+    uiFilterEtapa = "";
+    uiViewAll = false;
+    uiPage = 0;
+    if (inpSearch) inpSearch.value = "";
+    if (selFilterEtapa) selFilterEtapa.value = "";
+    if (pagerBar) pagerBar.style.display = "flex";
+    setTabButtons();
+
     renderAll();
   });
 
@@ -513,7 +594,9 @@ export async function bindRutaCriticaEvents() {
   btnCargaMasiva.addEventListener("click", openBulkModal);
   bulkClose.addEventListener("click", closeBulkModal);
   bulkCancel.addEventListener("click", closeBulkModal);
-  bulkBackdrop.addEventListener("click", (e) => { if (e.target === bulkBackdrop) closeBulkModal(); });
+  bulkBackdrop.addEventListener("click", (e) => {
+    if (e.target === bulkBackdrop) closeBulkModal();
+  });
   bulkPreview.addEventListener("click", previewBulk);
   bulkCommit.addEventListener("click", commitBulk);
 
@@ -542,6 +625,69 @@ export async function bindRutaCriticaEvents() {
 
     abrirVistaPreviaRutaCritica({ data, projectName: projName });
   });
+
+  // ✅ NUEVO: buscador + filtro + pestañas + paginado
+  inpSearch?.addEventListener("input", () => {
+    uiSearch = (inpSearch.value || "").trim();
+    uiPage = 0;
+    renderTable();
+  });
+
+  selFilterEtapa?.addEventListener("change", () => {
+    uiFilterEtapa = (selFilterEtapa.value || "").trim();
+    uiPage = 0;
+    renderTable();
+  });
+
+  btnTabPaged?.addEventListener("click", () => {
+    uiViewAll = false;
+    uiPage = 0;
+    setTabButtons();
+    if (pagerBar) pagerBar.style.display = "flex";
+    renderTable();
+  });
+
+  btnTabAll?.addEventListener("click", () => {
+    uiViewAll = true;
+    uiPage = 0;
+    setTabButtons();
+    if (pagerBar) pagerBar.style.display = "none";
+    renderTable();
+  });
+
+  btnPagePrev?.addEventListener("click", () => {
+    uiPage = Math.max(0, uiPage - 1);
+    renderTable();
+  });
+
+  btnPageNext?.addEventListener("click", () => {
+    const { totalPages } = getFilteredAndPagedView();
+    uiPage = Math.min(Math.max(0, totalPages - 1), uiPage + 1);
+    renderTable();
+  });
+
+  function setTabButtons() {
+    if (!btnTabPaged || !btnTabAll) return;
+
+    const on = (btn) => {
+      btn.style.border = "1px solid rgba(0,0,0,.12)";
+      btn.style.fontWeight = "900";
+      btn.style.opacity = "1";
+    };
+    const off = (btn) => {
+      btn.style.border = "1px solid rgba(0,0,0,.10)";
+      btn.style.fontWeight = "700";
+      btn.style.opacity = ".75";
+    };
+
+    if (uiViewAll) {
+      off(btnTabPaged);
+      on(btnTabAll);
+    } else {
+      on(btnTabPaged);
+      off(btnTabAll);
+    }
+  }
 
   function hydrateStageInputsFromState() {
     stDevIni.value = stages.dev.ini || "";
@@ -657,7 +803,9 @@ export async function bindRutaCriticaEvents() {
     renderAll();
   }
 
-  function iniOrFin(d) { return d; }
+  function iniOrFin(d) {
+    return d;
+  }
 
   /* =========================
      Gate de etapas (bloqueo)
@@ -666,11 +814,16 @@ export async function bindRutaCriticaEvents() {
     const { dev, pre, rod, edi, post } = stages;
 
     if (
-      !dev.ini || !dev.fin ||
-      !pre.ini || !pre.fin ||
-      !rod.ini || !rod.fin ||
-      !edi.ini || !edi.fin ||
-      !post.ini || !post.fin
+      !dev.ini ||
+      !dev.fin ||
+      !pre.ini ||
+      !pre.fin ||
+      !rod.ini ||
+      !rod.fin ||
+      !edi.ini ||
+      !edi.fin ||
+      !post.ini ||
+      !post.fin
     ) {
       return { ok: false, message: "Primero guarda las fechas de DESARROLLO / PRE / RODAJE / EDICIÓN / POST (inicio y fin)." };
     }
@@ -686,7 +839,7 @@ export async function bindRutaCriticaEvents() {
       return {
         ok: false,
         message: `Revisar fechas: PREPRODUCCIÓN debe iniciar ${fmtDMY(expectedPreIni)} (día siguiente al fin de DESARROLLO). Actualmente: ${fmtDMY(pre.ini)}.`,
-        warn: { stage: "PRE", expected: expectedPreIni, actual: pre.ini }
+        warn: { stage: "PRE", expected: expectedPreIni, actual: pre.ini },
       };
     }
 
@@ -695,7 +848,7 @@ export async function bindRutaCriticaEvents() {
       return {
         ok: false,
         message: `Revisar fechas: RODAJE debe iniciar ${fmtDMY(expectedRodIni)} (día siguiente al fin de PRE). Actualmente: ${fmtDMY(rod.ini)}.`,
-        warn: { stage: "ROD", expected: expectedRodIni, actual: rod.ini }
+        warn: { stage: "ROD", expected: expectedRodIni, actual: rod.ini },
       };
     }
 
@@ -704,7 +857,7 @@ export async function bindRutaCriticaEvents() {
       return {
         ok: false,
         message: `Revisar fechas: EDICIÓN debe iniciar ${fmtDMY(expectedEdiIni)} (día siguiente al fin de RODAJE). Actualmente: ${fmtDMY(edi.ini)}.`,
-        warn: { stage: "EDI", expected: expectedEdiIni, actual: edi.ini }
+        warn: { stage: "EDI", expected: expectedEdiIni, actual: edi.ini },
       };
     }
 
@@ -713,7 +866,7 @@ export async function bindRutaCriticaEvents() {
       return {
         ok: false,
         message: `Revisar fechas: POSTPRODUCCIÓN debe iniciar ${fmtDMY(expectedPostIni)} (día siguiente al fin de EDICIÓN). Actualmente: ${fmtDMY(post.ini)}.`,
-        warn: { stage: "POST", expected: expectedPostIni, actual: post.ini }
+        warn: { stage: "POST", expected: expectedPostIni, actual: post.ini },
       };
     }
 
@@ -820,20 +973,59 @@ export async function bindRutaCriticaEvents() {
     updateActionButtons();
   }
 
-  function renderTable() {
-    tbody.innerHTML = "";
+  // ✅ NUEVO: view final (filtro por botones + filtro select + búsqueda + paginado)
+  function getFilteredAndPagedView() {
+    // 1) filtro por botones "Vista" (filter)
+    let view = filter ? tasks.filter((t) => t.etapa === filter) : tasks.slice();
 
-    const view = filter ? tasks.filter((t) => t.etapa === filter) : tasks.slice();
+    // 2) filtro select etapa (uiFilterEtapa) (se combina con el anterior)
+    if (uiFilterEtapa) view = view.filter((t) => t.etapa === uiFilterEtapa);
 
+    // 3) búsqueda
+    const q = norm(uiSearch);
+    if (q) {
+      view = view.filter((t) => {
+        const hay = [t.etapa, t.tarea, t.notas].filter(Boolean).map(norm).join(" | ");
+        return hay.includes(q);
+      });
+    }
+
+    // 4) orden
     view.sort((a, b) => {
       const c = cmpDate(a.ini, b.ini);
       if (c !== 0) return c;
       return (a.tarea || "").localeCompare(b.tarea || "");
     });
 
-    filtroLabel.innerHTML = `Filtro: <b>${filter ? escapeHtml(filter) : "todas"}</b>`;
+    const total = view.length;
 
-    view.forEach((t) => {
+    if (uiViewAll) {
+      return { filtered: view, pageItems: view, total, totalPages: 1, page: 0 };
+    }
+
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const safePage = Math.max(0, Math.min(uiPage, totalPages - 1));
+    uiPage = safePage;
+
+    const start = safePage * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    const pageItems = view.slice(start, end);
+
+    return { filtered: view, pageItems, total, totalPages, page: safePage };
+  }
+
+  function renderTable() {
+    tbody.innerHTML = "";
+
+    const { pageItems, total, totalPages, page } = getFilteredAndPagedView();
+
+    // etiqueta de filtro: respeta lo existente, agregando el select si aplica
+    const labelA = filter ? escapeHtml(filter) : "todas";
+    const labelB = uiFilterEtapa ? escapeHtml(uiFilterEtapa) : "todas";
+    const labelSearch = uiSearch ? ` + búsqueda` : "";
+    filtroLabel.innerHTML = `Filtro: <b>${labelA}</b> | Select: <b>${labelB}</b>${labelSearch}`;
+
+    pageItems.forEach((t) => {
       const tr = document.createElement("tr");
       tr.dataset.uid = t.uid;
 
@@ -878,6 +1070,21 @@ export async function bindRutaCriticaEvents() {
     });
 
     syncChkAllWithView();
+
+    // ✅ UI: info de resultados y paginado
+    if (resultsInfo) resultsInfo.textContent = `${total} resultado${total === 1 ? "" : "s"}`;
+
+    if (uiViewAll) {
+      if (pageInfo) pageInfo.textContent = `Mostrando todos (${total})`;
+      if (btnPagePrev) btnPagePrev.disabled = true;
+      if (btnPageNext) btnPageNext.disabled = true;
+    } else {
+      if (pageInfo) pageInfo.textContent = `Página ${page + 1} / ${totalPages}`;
+      if (btnPagePrev) btnPagePrev.disabled = page <= 0;
+      if (btnPageNext) btnPageNext.disabled = page >= totalPages - 1;
+    }
+
+    updateActionButtons();
   }
 
   function syncChkAllWithView() {
@@ -910,6 +1117,19 @@ export async function bindRutaCriticaEvents() {
 
   function setFilter(etapa) {
     filter = etapa;
+
+    // ✅ sincroniza select también para que sea consistente (sin obligar, pero ayuda)
+    if (selFilterEtapa) {
+      if (etapa) {
+        uiFilterEtapa = etapa;
+        selFilterEtapa.value = etapa;
+      } else {
+        uiFilterEtapa = "";
+        selFilterEtapa.value = "";
+      }
+    }
+
+    uiPage = 0;
     renderAll();
   }
 
@@ -1146,7 +1366,10 @@ export async function bindRutaCriticaEvents() {
   }
 
   function parseBulkText(text) {
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
     const sep = lines.some((l) => l.includes("\t")) ? "\t" : ",";
     const rows = lines.map((l) => l.split(sep).map((c) => c.trim()));
 
@@ -1203,12 +1426,18 @@ export async function bindRutaCriticaEvents() {
   ========================= */
   function applyDateTypingSupport() {
     const allDateInputs = [
-      stDevIni, stDevFin,
-      stPreIni, stPreFin,
-      stRodIni, stRodFin,
-      stEdiIni, stEdiFin,
-      stPostIni, stPostFin,
-      inpIni, inpFin
+      stDevIni,
+      stDevFin,
+      stPreIni,
+      stPreFin,
+      stRodIni,
+      stRodFin,
+      stEdiIni,
+      stEdiFin,
+      stPostIni,
+      stPostFin,
+      inpIni,
+      inpFin,
     ].filter(Boolean);
 
     allDateInputs.forEach((el) => {
@@ -1231,15 +1460,6 @@ export async function bindRutaCriticaEvents() {
     if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
     if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
     if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
     if (s === "PRODUCCION") return "RODAJE";
     if (s === "PRODUCCION") return "RODAJE";
     if (s === "PRODUCCION") return "RODAJE";
@@ -1326,7 +1546,7 @@ export async function bindRutaCriticaEvents() {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
     const [y, m, d] = iso.split("-").map(Number);
     const dt = new Date(Date.UTC(y, m - 1, d));
-    return dt.getUTCFullYear() === y && (dt.getUTCMonth() + 1) === m && dt.getUTCDate() === d;
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() + 1 === m && dt.getUTCDate() === d;
   }
 
   function cmpDate(a, b) {

@@ -21,6 +21,10 @@
    ✅ AJUSTE QUIRÚRGICO (NUEVO):
    - Agrega una PRIMERA hoja "RESUMEN RUTA CRÍTICA" antes de la tabla completa,
      sin romper el slicing multipágina, logo, ni la vista previa.
+
+   ✅ AJUSTE QUIRÚRGICO (NUEVO - ESTE CAMBIO):
+   - El resumen en el export final debe quedar CENTRADO en la hoja
+   - Y verse MÁS GRANDE (llenando mejor el ancho útil)
 ========================================================= */
 
 const LS_RC_KEY = "RUTA_CRITICA_V1_DATA";
@@ -524,6 +528,8 @@ function buildResumenRutaCriticaHTML({ projectName, rows, showActions = false })
   const safeName = escapeHtml(projectName || "Proyecto");
   const items = Array.isArray(rows) ? rows : [];
 
+  // ✅ "printSurface" con ancho controlado para que el PDF lo escale y llene mejor la hoja.
+  // ✅ Wrapper en flex para centrar vertical/horizontal.
   return `
 <!DOCTYPE html>
 <html>
@@ -531,7 +537,12 @@ function buildResumenRutaCriticaHTML({ projectName, rows, showActions = false })
 <meta charset="utf-8" />
 <title>Resumen Ruta Crítica</title>
 <style>
-  body{ margin:0; font-family: Arial, Helvetica, sans-serif; color:#111; background:#fff; }
+  body{
+    margin:0;
+    font-family: Arial, Helvetica, sans-serif;
+    color:#111;
+    background:#fff;
+  }
 
   .topbar{
     display:flex;
@@ -547,27 +558,40 @@ function buildResumenRutaCriticaHTML({ projectName, rows, showActions = false })
     cursor:pointer;
   }
 
+  /* ✅ Centrado total en página */
   .wrapper{
-    padding: 22px 26px 18px;
+    min-height: 100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding: 0;
+  }
+
+  /* ✅ Superficie ancha para escalar a "fit-to-width" y verse grande */
+  .print-surface{
+    width: 2000px;
+    box-sizing: border-box;
+    padding: 80px 140px 70px;
   }
 
   .project-name{
-    font-weight:900;
-    font-size:18px;
-    letter-spacing:.2px;
+    font-weight: 900;
+    font-size: 34px;
+    letter-spacing: .2px;
     text-align:center;
-    margin: 8px 0 12px;
+    margin: 0 0 16px;
   }
 
   .title{
-    font-weight:900;
-    font-size:16px;
+    font-weight: 900;
+    font-size: 28px;
     text-align:center;
-    margin: 0 0 18px;
+    margin: 0 0 34px;
   }
 
   .card{
-    max-width: 680px;
+    width: 100%;
+    max-width: none;
     margin: 0 auto;
   }
 
@@ -575,23 +599,24 @@ function buildResumenRutaCriticaHTML({ projectName, rows, showActions = false })
     width:100%;
     border-collapse: collapse;
     table-layout: fixed;
-    font-size:13px;
+    font-size: 20px;
   }
   td{
-    border: 1px solid #222;
-    padding: 10px 12px;
+    border: 2px solid #222;
+    padding: 18px 18px;
     vertical-align: middle;
   }
   .col-etapa{
-    width: 44%;
+    width: 42%;
     color: #fff;
     font-weight: 900;
     text-align: center;
+    letter-spacing: .2px;
   }
   .col-fecha{
-    width: 56%;
+    width: 58%;
     color: #111;
-    font-weight: 400;
+    font-weight: 500;
     text-align: center;
     background: #fff;
   }
@@ -613,24 +638,30 @@ ${showActions ? `
 ` : ``}
 
 <div class="wrapper">
-  <div class="project-name">NOMBRE DEL PROYECTO: ${safeName}</div>
-  <div class="title">RESUMEN RUTA CRÍTICA</div>
+  <div id="printSurface" class="print-surface">
+    <div class="project-name">NOMBRE DEL PROYECTO: ${safeName}</div>
+    <div class="title">RESUMEN RUTA CRÍTICA</div>
 
-  <div class="card">
-    <table>
-      <tbody>
-        ${items.map((r) => `
-          <tr>
-            <td class="col-etapa" style="background:${escapeAttr(r.color || "#1f2a44")};">
-              ${escapeHtml(r.etapa || "")}
-            </td>
-            <td class="col-fecha">
-              ${escapeHtml(r.rango || "")}
-            </td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
+    <div class="card">
+      <table id="rcTable">
+        <tbody>
+          ${items
+            .map(
+              (r) => `
+            <tr>
+              <td class="col-etapa" style="background:${escapeAttr(r.color || "#1f2a44")};">
+                ${escapeHtml(r.etapa || "")}
+              </td>
+              <td class="col-fecha">
+                ${escapeHtml(r.rango || "")}
+              </td>
+            </tr>
+          `
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 

@@ -30,6 +30,10 @@
       - Barra de búsqueda (texto) para coincidencias en tareas (Etapa / Tarea / Notas)
       - Filtro simple de etapa (select) + respeta los botones "Vista"
       - Paginado 20 en 20 + botón "Ver todas"
+
+   ✅ NUEVO (AJUSTE QUIRÚRGICO SOLICITADO - ESTE CAMBIO):
+      1) En el modal de carga masiva, agregar scroll interno (cuando son muchas filas)
+      2) Permitir precargar vía archivo (CSV/TSV/XLSX) + botón para descargar plantilla
 ========================================================= */
 
 // ✅ CAMBIO QUIRÚRGICO: importar el service de vista previa tipo Excel
@@ -203,25 +207,42 @@ export function renderRutaCriticaView() {
 
     <!-- Modal Carga Masiva -->
     <div id="rcBulkBackdrop" class="modal-backdrop" style="display:none;">
-      <div class="modal" style="max-width: 1020px;">
-        <div class="modal-header">
-          <h3>Carga masiva (pegar desde Excel)</h3>
+      <div class="modal" style="max-width: 1020px; display:flex; flex-direction:column; max-height: 88vh;">
+        <div class="modal-header" style="flex:0 0 auto;">
+          <h3>Carga masiva (pegar desde Excel / subir archivo)</h3>
           <button id="rcBulkClose" class="modal-close" aria-label="Cerrar">✕</button>
         </div>
 
-        <div class="modal-body">
+        <!-- ✅ FIX: cuerpo con scroll interno para que el botón de aceptar siempre sea accesible -->
+        <div class="modal-body" style="flex:1 1 auto; overflow:auto;">
           <p class="muted" style="margin:0 0 10px;">
             Formato recomendado (tabulado):
             <br/>
             <b>ETAPA | TAREA | INICIO | FIN | NOTAS</b>
           </p>
 
-          <textarea id="rcBulkText" style="width:100%; height:160px; resize:vertical;"
-placeholder="ETAPA	TAREA	INICIO	FIN	NOTAS
-DESARROLLO	Investigación referencias	2026-02-01	2026-02-03	-
-PREPRODUCCIÓN	Renta equipo A	2026-02-04	2026-02-06	confirmar proveedor"></textarea>
+          <!-- ✅ NUEVO: plantilla + carga por archivo -->
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 0 0 10px;">
+            <button id="rcBulkDownloadTpl" class="btn btn-light">Descargar plantilla</button>
 
-          <div class="rc-actions" style="margin-top:10px; display:flex; gap:10px; align-items:center;">
+            <input id="rcBulkFile" type="file"
+                   accept=".csv,.tsv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/tab-separated-values"
+                   style="flex:1; min-width:240px;" />
+
+            <button id="rcBulkLoadFile" class="btn btn-secondary">Cargar archivo</button>
+
+            <div class="muted" style="flex:1; min-width:220px;">
+              Acepta CSV / TSV / XLSX.
+            </div>
+          </div>
+
+          <textarea id="rcBulkText" style="width:100%; height:160px; resize:vertical;"
+placeholder="ETAPA\tTAREA\tINICIO\tFIN\tNOTAS
+DESARROLLO\tInvestigación referencias\t2026-02-01\t2026-02-03\t-
+PREPRODUCCIÓN\tRenta equipo A\t2026-02-04\t2026-02-06\tConfirmar proveedor"></textarea>
+
+          <!-- ✅ FIX: barra de acciones sticky -->
+          <div class="rc-actions" style="position:sticky; bottom:0; padding:10px 0; margin-top:10px; display:flex; gap:10px; align-items:center; background:#0f0f10;">
             <button id="rcBulkPreview" class="btn btn-secondary">Previsualizar</button>
             <div style="flex:1"></div>
             <button id="rcBulkCommit" class="btn btn-primary" disabled>Agregar 0 tareas</button>
@@ -246,7 +267,7 @@ PREPRODUCCIÓN	Renta equipo A	2026-02-04	2026-02-06	confirmar proveedor"></texta
           </div>
         </div>
 
-        <div class="modal-footer">
+        <div class="modal-footer" style="flex:0 0 auto;">
           <button id="rcBulkCancel" class="btn btn-light">Cancelar</button>
         </div>
       </div>
@@ -338,6 +359,9 @@ export async function bindRutaCriticaEvents() {
   const bulkClose = document.getElementById("rcBulkClose");
   const bulkCancel = document.getElementById("rcBulkCancel");
   const bulkText = document.getElementById("rcBulkText");
+  const bulkFile = document.getElementById("rcBulkFile");
+  const bulkLoadFile = document.getElementById("rcBulkLoadFile");
+  const bulkDownloadTpl = document.getElementById("rcBulkDownloadTpl");
   const bulkPreview = document.getElementById("rcBulkPreview");
   const bulkCommit = document.getElementById("rcBulkCommit");
   const bulkErrors = document.getElementById("rcBulkErrors");
@@ -594,9 +618,22 @@ export async function bindRutaCriticaEvents() {
   btnCargaMasiva.addEventListener("click", openBulkModal);
   bulkClose.addEventListener("click", closeBulkModal);
   bulkCancel.addEventListener("click", closeBulkModal);
-  bulkBackdrop.addEventListener("click", (e) => {
-    if (e.target === bulkBackdrop) closeBulkModal();
+  bulkBackdrop.addEventListener("click", (e) => { if (e.target === bulkBackdrop) closeBulkModal(); });
+
+  bulkDownloadTpl?.addEventListener("click", downloadBulkTemplate);
+  bulkLoadFile?.addEventListener("click", () => {
+    const file = bulkFile?.files?.[0];
+    if (!file) { alert("Selecciona un archivo primero (CSV/TSV/XLSX)."); return; }
+    loadBulkFromFile(file);
   });
+
+  // UX: si el usuario selecciona archivo, intentamos cargarlo al vuelo
+  bulkFile?.addEventListener("change", () => {
+    const file = bulkFile?.files?.[0];
+    if (!file) return;
+    loadBulkFromFile(file);
+  });
+
   bulkPreview.addEventListener("click", previewBulk);
   bulkCommit.addEventListener("click", commitBulk);
 
@@ -1280,11 +1317,120 @@ export async function bindRutaCriticaEvents() {
     bulkErrors.textContent = "";
     bulkCommit.disabled = true;
     bulkCommit.textContent = "Agregar 0 tareas";
+    if (bulkFile) bulkFile.value = "";
     bulkBackdrop.style.display = "flex";
+    setTimeout(() => {
+      const mb = bulkBackdrop.querySelector(".modal-body");
+      if (mb) mb.scrollTop = 0;
+    }, 0);
   }
 
   function closeBulkModal() {
     bulkBackdrop.style.display = "none";
+  }
+
+  function downloadBulkTemplate() {
+    try {
+      const lines = [
+        ["ETAPA", "TAREA", "INICIO", "FIN", "NOTAS"].join(","),
+        ["DESARROLLO", "Nombre de tarea", "2026-01-01", "2026-01-03", "Opcional"].join(","),
+      ];
+      const csv = lines.join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "PLANTILLA_RUTA_CRITICA.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 15000);
+    } catch (e) {
+      console.error(e);
+      alert("No pude generar la plantilla.");
+    }
+  }
+
+  async function loadBulkFromFile(file) {
+    try {
+      const name = (file?.name || "").toLowerCase();
+      if (name.endsWith(".xlsx")) {
+        const tsv = await parseXlsxFileToTsv(file);
+        if (!tsv.trim()) {
+          alert("El XLSX está vacío.");
+          return;
+        }
+        bulkText.value = tsv.trim();
+      } else {
+        const txt = await readFileAsText(file);
+        if (!txt.trim()) {
+          alert("El archivo está vacío.");
+          return;
+        }
+        bulkText.value = txt.trim();
+      }
+      previewBulk();
+    } catch (e) {
+      console.error(e);
+      alert("No pude leer ese archivo. Asegúrate de que sea CSV/TSV/XLSX y que tenga columnas ETAPA, TAREA, INICIO, FIN, NOTAS.");
+    }
+  }
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("readFileAsText failed"));
+      reader.readAsText(file);
+    });
+  }
+
+  function readFileAsArrayBuffer(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error("readFileAsArrayBuffer failed"));
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  async function parseXlsxFileToTsv(file) {
+    const buf = await readFileAsArrayBuffer(file);
+
+    const xlsxMod = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
+    const XLSX = xlsxMod?.default || xlsxMod;
+    const wb = XLSX.read(buf, { type: "array" });
+
+    const sheetName = wb.SheetNames?.[0];
+    if (!sheetName) return "";
+
+    const ws = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }); // array of arrays
+    if (!rows || !rows.length) return "";
+
+    // Limpia filas vacías
+    const cleaned = rows
+      .map((r) => (Array.isArray(r) ? r.map((c) => String(c ?? "").trim()) : []))
+      .filter((r) => r.some((c) => String(c).trim() !== ""));
+
+    if (!cleaned.length) return "";
+
+    // Si trae encabezado, lo dejamos; si no, lo agregamos.
+    const first = cleaned[0].map((c) => norm(c));
+    const hasHeader = first.includes("ETAPA") && first.includes("TAREA") && first.includes("INICIO");
+    const out = [];
+
+    if (!hasHeader) {
+      out.push(["ETAPA", "TAREA", "INICIO", "FIN", "NOTAS"].join("\t"));
+    }
+
+    for (const r of cleaned) {
+      // Normaliza a 5 columnas
+      const row = [r[0] ?? "", r[1] ?? "", r[2] ?? "", r[3] ?? "", r[4] ?? ""];
+      out.push(row.join("\t"));
+    }
+
+    return out.join("\n");
   }
 
   function previewBulk() {
@@ -1297,7 +1443,7 @@ export async function bindRutaCriticaEvents() {
     bulkCommit.textContent = "Agregar 0 tareas";
 
     if (!raw) {
-      showBulkErrors(["Pega al menos 1 fila (puede incluir encabezado)."]);
+      showBulkErrors(["Pega al menos 1 fila (puede incluir encabezado) o sube un archivo."]);
       return;
     }
 
@@ -1455,65 +1601,6 @@ export async function bindRutaCriticaEvents() {
     const s = norm(v);
     if (s === "DESARROLLO") return "DESARROLLO";
     if (s === "PREPRODUCCION" || s === "PRE PRODUCCION") return "PREPRODUCCIÓN";
-    if (s === "PRODUCCION" || s === "PRODUCCION" || s === "PRODUCCION " || s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION" || s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
-    if (s === "PRODUCCION") return "RODAJE";
     if (s === "PRODUCCION") return "RODAJE";
     if (s === "RODAJE") return "RODAJE";
     if (s === "EDICION") return "EDICIÓN";

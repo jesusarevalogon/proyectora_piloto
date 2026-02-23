@@ -1617,10 +1617,10 @@ const desgloseEl = doc.querySelector(".pdf-desglose");
 
       const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
 
-// Página 1 (portrait): darle más área útil para que el resumen se vea más grande
+// Página 1 (portrait): ajustar a 1 hoja
 addCanvasFit(pdf, resumenCanvas, {
-  margin: 12,
-  headerExtra: 0,
+  margin: 22,
+  headerExtra: logoStamp ? logoStamp.headerExtra : 0,
 });
 
       pdf.addPage("a4", "landscape");
@@ -1656,3 +1656,4 @@ addCanvasFit(pdf, resumenCanvas, {
     } catch {}
   }
 }
+

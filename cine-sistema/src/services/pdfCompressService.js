@@ -1,17 +1,25 @@
 /* =========================================================
    src/services/pdfCompressService.js
    Compresión PDF en cliente (pdf.js -> render -> jpg -> pdf-lib)
-   - Pensado para PDFs escaneados/pesados.
-   - Si el resultado no mejora, devuelve el original.
+
+   ✅ FIX CRÍTICO (para que NO truene en producción):
+   - El import anterior de pdf-lib (dist/pdf-lib.min.js) NO expone PDFDocument como export ESM,
+     por eso salía: "Cannot read properties of undefined (reading 'create')".
+   - Ahora carga pdf-lib por ESM (+esm) y tiene fallback a UMD (window.PDFLib).
+
+   ✅ Robustez extra:
+   - Si canvas.toBlob devuelve null, aborta y regresa original.
+   - Si el PDF requiere password / está raro, regresa original.
+   - Si algo falla en cualquier punto, regresa original (sin romper Entrega).
 ========================================================= */
 
 let _pdfjs = null;
+let _pdfLib = null;
 
 async function loadPdfJs() {
   if (_pdfjs) return _pdfjs;
 
   // pdf.js ESM (CDN)
-  // Nota: fijamos versión para estabilidad. Puedes cambiarla si quieres.
   const pdfjs = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.mjs");
 
   // Worker ESM
@@ -38,16 +46,78 @@ function clamp(n, a, b) {
 
 async function canvasToJpegBytes(canvas, quality = 0.72) {
   const q = clamp(Number(quality || 0.72), 0.35, 0.92);
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", q));
+
+  const blob = await new Promise((resolve) => {
+    try {
+      canvas.toBlob((b) => resolve(b || null), "image/jpeg", q);
+    } catch {
+      resolve(null);
+    }
+  });
+
+  if (!blob) return null;
+
   const buf = await blob.arrayBuffer();
   return new Uint8Array(buf);
 }
 
 async function loadPdfLib() {
-  // Tu proyecto ya usa pdf-lib en Entrega; lo cargamos igual de forma lazy por CDN.
-  // Si tú ya tienes una función loadPdfLib() global, también podrías reutilizarla.
-  const mod = await import("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js");
-  return mod;
+  if (_pdfLib) return _pdfLib;
+
+  // ✅ Opción 1 (preferida): ESM real con exports nombrados
+  try {
+    const mod = await import("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm");
+    // mod.PDFDocument debe existir aquí
+    if (mod && mod.PDFDocument) {
+      _pdfLib = mod;
+      return _pdfLib;
+    }
+  } catch {
+    // seguimos a fallback
+  }
+
+  // ✅ Opción 2: UMD (window.PDFLib) por script tag
+  try {
+    if (window?.PDFLib?.PDFDocument) {
+      _pdfLib = window.PDFLib;
+      return _pdfLib;
+    }
+
+    await new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-pdf-lib-umd="1"]');
+      if (existing) {
+        const t = setInterval(() => {
+          if (window?.PDFLib?.PDFDocument) {
+            clearInterval(t);
+            resolve();
+          }
+        }, 50);
+        setTimeout(() => {
+          clearInterval(t);
+          reject(new Error("Timeout cargando pdf-lib UMD"));
+        }, 12000);
+        return;
+      }
+
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
+      s.async = true;
+      s.defer = true;
+      s.setAttribute("data-pdf-lib-umd", "1");
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("No pude cargar pdf-lib UMD"));
+      document.head.appendChild(s);
+    });
+
+    if (window?.PDFLib?.PDFDocument) {
+      _pdfLib = window.PDFLib;
+      return _pdfLib;
+    }
+  } catch {
+    // nada
+  }
+
+  throw new Error("No pude cargar pdf-lib (ESM ni UMD).");
 }
 
 /**
@@ -71,74 +141,104 @@ export async function compressPdfBytes(inputBytes, opts = {}) {
   if (inputMB > maxInputMB) return bytes;
 
   // Cargar pdf.js
-  const pdfjs = await loadPdfJs();
+  let pdfjs;
+  try {
+    pdfjs = await loadPdfJs();
+  } catch {
+    return bytes;
+  }
 
   // Abrir documento
   let doc;
   try {
     doc = await pdfjs.getDocument({ data: bytes }).promise;
   } catch {
-    // No es un PDF válido (o está cifrado raro). No tocamos.
+    // No es PDF válido, o requiere password, o está cifrado raro. No tocamos.
     return bytes;
   }
 
-  const numPages = doc.numPages || 0;
+  const numPages = doc?.numPages || 0;
   if (!numPages || numPages > maxPages) return bytes;
 
   // Cargar pdf-lib
-  const PDFLib = await loadPdfLib();
-  const { PDFDocument } = PDFLib;
+  let PDFLib;
+  try {
+    PDFLib = await loadPdfLib();
+  } catch {
+    return bytes;
+  }
 
-  const outDoc = await PDFDocument.create();
+  const PDFDocument = PDFLib?.PDFDocument;
+  if (!PDFDocument || typeof PDFDocument.create !== "function") {
+    return bytes;
+  }
+
+  let outDoc;
+  try {
+    outDoc = await PDFDocument.create();
+  } catch {
+    return bytes;
+  }
 
   // Escala: PDF “points” son 72dpi.
   const scale = clamp(dpi / 72, 1.2, 3.0);
 
-  for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-    const page = await doc.getPage(pageNum);
+  try {
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+      const page = await doc.getPage(pageNum);
 
-    // Tamaño base (scale 1)
-    const vp1 = page.getViewport({ scale: 1 });
-    const pageW = vp1.width;
-    const pageH = vp1.height;
+      // Tamaño base (scale 1)
+      const vp1 = page.getViewport({ scale: 1 });
+      const pageW = vp1.width;
+      const pageH = vp1.height;
 
-    // Render a canvas en alta resolución
-    const viewport = page.getViewport({ scale });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.floor(viewport.width));
-    canvas.height = Math.max(1, Math.floor(viewport.height));
+      // Render a canvas en alta resolución
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.floor(viewport.width));
+      canvas.height = Math.max(1, Math.floor(viewport.height));
 
-    const ctx = canvas.getContext("2d", { alpha: false });
-    if (!ctx) return bytes;
+      const ctx = canvas.getContext("2d", { alpha: false });
+      if (!ctx) return bytes;
 
-    // Fondo blanco para evitar transparencias
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Fondo blanco para evitar transparencias
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    await page.render({ canvasContext: ctx, viewport }).promise;
+      await page.render({ canvasContext: ctx, viewport }).promise;
 
-    // Canvas -> JPG bytes
-    const jpgBytes = await canvasToJpegBytes(canvas, quality);
+      // Canvas -> JPG bytes
+      const jpgBytes = await canvasToJpegBytes(canvas, quality);
+      if (!jpgBytes?.byteLength) return bytes;
 
-    // Insertar página nueva con tamaño original (en puntos)
-    const outPage = outDoc.addPage([pageW, pageH]);
+      // Insertar página nueva con tamaño original (en puntos)
+      const outPage = outDoc.addPage([pageW, pageH]);
 
-    // Embed jpg y dibujar full-page
-    const jpg = await outDoc.embedJpg(jpgBytes);
+      // Embed jpg y dibujar full-page
+      const jpg = await outDoc.embedJpg(jpgBytes);
 
-    outPage.drawImage(jpg, {
-      x: 0,
-      y: 0,
-      width: pageW,
-      height: pageH,
-    });
+      outPage.drawImage(jpg, {
+        x: 0,
+        y: 0,
+        width: pageW,
+        height: pageH,
+      });
 
-    // Limpieza canvas (ayuda RAM)
-    canvas.width = 1;
-    canvas.height = 1;
+      // Limpieza canvas (ayuda RAM)
+      canvas.width = 1;
+      canvas.height = 1;
+    }
+  } catch {
+    return bytes;
   }
 
-  const outBytes = await outDoc.save({ useObjectStreams: true });
+  let outBytes;
+  try {
+    outBytes = await outDoc.save({ useObjectStreams: true });
+  } catch {
+    return bytes;
+  }
+
   const outU8 = new Uint8Array(outBytes);
 
   // Si no mejoró, devolver original
@@ -160,10 +260,17 @@ export async function maybeCompressPdfBytes(bytes, opts = {}) {
   const mb = u8.byteLength / (1024 * 1024);
   if (mb < thresholdMB) return u8;
 
-  return await compressPdfBytes(u8, {
-    dpi: opts.dpi ?? 140,
-    quality: opts.quality ?? 0.72,
-  });
+  // ✅ Seguridad: si algo falla, regresamos original (no rompemos Entrega)
+  try {
+    return await compressPdfBytes(u8, {
+      dpi: opts.dpi ?? 140,
+      quality: opts.quality ?? 0.72,
+      maxPages: opts.maxPages ?? 220,
+      maxInputMB: opts.maxInputMB ?? 60,
+    });
+  } catch {
+    return u8;
+  }
 }
 
 /**
@@ -178,8 +285,19 @@ export async function maybeCompressPdfFile(file, opts = {}) {
   const mime = file.type || "";
   if (!isProbablyPdf(name, mime)) return { file, compressed: false, outBytes: file.size || 0 };
 
-  const inBytes = new Uint8Array(await file.arrayBuffer());
-  const outBytes = await maybeCompressPdfBytes(inBytes, opts);
+  let inBytes;
+  try {
+    inBytes = new Uint8Array(await file.arrayBuffer());
+  } catch {
+    return { file, compressed: false, outBytes: file.size || 0 };
+  }
+
+  let outBytes;
+  try {
+    outBytes = await maybeCompressPdfBytes(inBytes, opts);
+  } catch {
+    outBytes = inBytes;
+  }
 
   // Si no cambió, no recreamos File
   if (outBytes.byteLength === inBytes.byteLength) {

@@ -1613,10 +1613,11 @@ async function htmlToPdfBytes(html) {
 
       const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
 
-      addCanvasFit(pdf, resumenCanvas, {
-        margin: 22,
-        headerExtra: logoStamp ? logoStamp.headerExtra : 0,
-      });
+      // Página 1 (portrait): darle más área útil para que el resumen se vea más grande
+addCanvasFit(pdf, resumenCanvas, {
+  margin: 12,
+  headerExtra: 0,
+});
 
       pdf.addPage("a4", "landscape");
       addCanvasSliced(pdf, desgloseCanvas, {
@@ -1651,4 +1652,5 @@ async function htmlToPdfBytes(html) {
     } catch {}
   }
 }
+
 

@@ -31,10 +31,9 @@
    ✅ NUEVO (PUNTO 1 SOLICITADO):
    - La portada, si existe, se inserta FULL PAGE (sin márgenes, escalando a hoja completa).
 
-   ✅ NUEVO (AJUSTE QUIRÚRGICO - PASO 3 / D):
-   - Fallback al armar Entrega:
-     * Si un PDF viene pesado (>= 4MB), se comprime on-the-fly antes de hacer merge:
-       pdf.js -> rasterizar -> reconstruir PDF (pdf-lib)
+   ✅ FIX QUIRÚRGICO (ERROR "No PDF header found"):
+   - Antes de hacer PDFDocument.load(bytes), valida que los bytes realmente parezcan PDF (%PDF-).
+   - Si no, aborta con mensaje claro indicando qué documento falló.
 ========================================================= */
 
 import { supabase } from "../services/supabase.js";
@@ -47,9 +46,6 @@ const MAX_BYTES = Infinity;
 // ✅ Soft limit solo para mensaje (no bloquea)
 const SOFT_LIMIT_MB = 50;
 const SOFT_LIMIT_BYTES = SOFT_LIMIT_MB * 1024 * 1024;
-
-// ✅ Umbral para compresión fallback (solo para PDFs)
-const PDF_COMPRESS_THRESHOLD_BYTES = 4 * 1024 * 1024;
 
 const norm = (s) =>
   (s ?? "")
@@ -126,6 +122,47 @@ function escapeHtml(str) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+/* =========================================================
+   ✅ FIX: detectar PDFs reales (header) + debug
+========================================================= */
+
+function looksLikePdfBytes(u8) {
+  try {
+    if (!(u8 instanceof Uint8Array) || u8.byteLength < 5) return false;
+    // Buscar "%PDF-" en los primeros 1024 bytes (algunos PDFs traen basura antes del header)
+    const limit = Math.min(u8.byteLength, 1024);
+    const s = new TextDecoder("latin1").decode(u8.slice(0, limit));
+    return s.includes("%PDF-");
+  } catch {
+    return false;
+  }
+}
+
+function firstBytesDebug(u8, n = 24) {
+  try {
+    if (!(u8 instanceof Uint8Array)) return "";
+    const arr = Array.from(u8.slice(0, Math.min(n, u8.byteLength)));
+    return arr.map((b) => b.toString(16).padStart(2, "0")).join(" ");
+  } catch {
+    return "";
+  }
+}
+
+function docEntryDisplayName(docEntry, fallback = "Documento") {
+  return docEntry?.fileName || docEntry?.raw?.name || docEntry?.title || docEntry?.code || fallback;
+}
+
+function throwInvalidPdfError(docLabel, docEntry, bytes, extra = "") {
+  const name = docEntryDisplayName(docEntry, docLabel);
+  const dbg = firstBytesDebug(bytes, 24);
+  const hint =
+    `El archivo "${name}" no es un PDF válido para merge (no se encontró "%PDF-" en los primeros bytes).\n` +
+    `Solución: re-súbelo como PDF exportado (no renombrado) o vuelve a cargarlo en Documentación.\n` +
+    (extra ? `${extra}\n` : "") +
+    `Debug (primeros bytes): ${dbg}`;
+  throw new Error(hint);
 }
 
 export function renderEntregaView() {
@@ -779,9 +816,10 @@ async function entryToBytes(docEntry) {
   const path = docEntry.path || "";
   if (path && supabase) {
     const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 30);
-    if (error || !data?.signedUrl) throw new Error("No se pudo leer el archivo desde Storage.");
+    if (error || !data?.signedUrl) throw new Error("No se pudo leer el archivo desde Storage (signed url).");
     const res = await fetch(data.signedUrl);
     if (!res.ok) throw new Error("No se pudo descargar el archivo desde Storage.");
+
     const buf = await res.arrayBuffer();
     return new Uint8Array(buf);
   }
@@ -789,6 +827,7 @@ async function entryToBytes(docEntry) {
   // Último recurso: intentar fetch directo si hay url
   if (docEntry.url) {
     const res = await fetch(docEntry.url);
+    if (!res.ok) throw new Error("No se pudo descargar el archivo desde URL.");
     const buf = await res.arrayBuffer();
     return new Uint8Array(buf);
   }
@@ -806,55 +845,14 @@ function isPdfEntry(docEntry) {
   return false;
 }
 
-function isPngEntry(docEntry) {
-  const mime = (docEntry?.mime || "").toLowerCase();
-  const name = (docEntry?.fileName || "").toLowerCase();
-  const dataUrl = docEntry?.dataUrl || "";
-  if ((dataUrl || "").startsWith("data:image/png")) return true;
-  if (mime.includes("png")) return true;
-  if (name.endsWith(".png")) return true;
-  return false;
-}
-
-function isJpgEntry(docEntry) {
-  const mime = (docEntry?.mime || "").toLowerCase();
-  const name = (docEntry?.fileName || "").toLowerCase();
-  const dataUrl = docEntry?.dataUrl || "";
-  if ((dataUrl || "").startsWith("data:image/jpeg") || (dataUrl || "").startsWith("data:image/jpg")) return true;
-  if (mime.includes("jpeg") || mime.includes("jpg")) return true;
-  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return true;
-  return false;
-}
-
-/* =========================================================
-   ✅ NUEVO (D): Compresión fallback "on the fly" para PDFs pesados
-========================================================= */
-
-async function maybeCompressPdfForEntrega(bytes, docEntry) {
-  try {
-    if (!bytes || !(bytes instanceof Uint8Array)) return bytes;
-    if (!isPdfEntry(docEntry)) return bytes;
-    if (bytes.byteLength < PDF_COMPRESS_THRESHOLD_BYTES) return bytes;
-
-    const mod = await import("../services/pdfCompressService.js");
-    const fn = mod?.maybeCompressPdfBytes;
-    if (typeof fn !== "function") return bytes;
-
-    return await fn(bytes, { thresholdMB: 4, dpi: 140, quality: 0.72 });
-  } catch (e) {
-    console.warn("Compresión PDF (fallback Entrega) falló, se deja original:", e);
-    return bytes;
-  }
+function isPdfDataUrl(dataUrl, mime = "") {
+  if ((mime || "").toLowerCase().includes("pdf")) return true;
+  return (dataUrl || "").startsWith("data:application/pdf");
 }
 
 /* =========================================================
    PDF assembly (mantener orientación + mismo ancho visual)
 ========================================================= */
-
-function isPdfDataUrl(dataUrl, mime = "") {
-  if ((mime || "").toLowerCase().includes("pdf")) return true;
-  return (dataUrl || "").startsWith("data:application/pdf");
-}
 
 function getA4ForOrientation(w, h) {
   // puntos (72dpi): A4 portrait = 595.28 x 841.89
@@ -976,15 +974,20 @@ async function addImageFullPage(outDoc, imgEmbed) {
    ✅ NUEVO (quirúrgico): helper para insertar doc opcional
 ========================================================= */
 async function appendOptionalDocToOut(outDoc, PDFLib, PDFDocument, docEntry) {
-  let bytes = await entryToBytes(docEntry);
+  const bytes = await entryToBytes(docEntry);
   if (!bytes) return false;
-
-  // ✅ D: compresión fallback para PDFs pesados
-  bytes = await maybeCompressPdfForEntrega(bytes, docEntry);
 
   // PDF
   if (isPdfEntry(docEntry)) {
-    const src = await PDFDocument.load(bytes);
+    if (!looksLikePdfBytes(bytes)) {
+      throwInvalidPdfError("Documento opcional", docEntry, bytes, "Se intentó anexar un PDF opcional.");
+    }
+    let src;
+    try {
+      src = await PDFDocument.load(bytes);
+    } catch (e) {
+      throwInvalidPdfError("Documento opcional", docEntry, bytes, `PDFDocument.load falló: ${e?.message || e}`);
+    }
     await addPdfKeepOrientationSameWidth(outDoc, PDFLib, src);
     return true;
   }
@@ -1005,14 +1008,19 @@ async function appendOptionalDocToOut(outDoc, PDFLib, PDFDocument, docEntry) {
 
 // ✅ Portada: FULL PAGE
 async function appendOptionalDocToOutFullPage(outDoc, PDFLib, PDFDocument, docEntry) {
-  let bytes = await entryToBytes(docEntry);
+  const bytes = await entryToBytes(docEntry);
   if (!bytes) return false;
 
-  // ✅ D: compresión fallback para PDFs pesados
-  bytes = await maybeCompressPdfForEntrega(bytes, docEntry);
-
   if (isPdfEntry(docEntry)) {
-    const src = await PDFDocument.load(bytes);
+    if (!looksLikePdfBytes(bytes)) {
+      throwInvalidPdfError("Portada", docEntry, bytes, "La portada fue detectada como PDF pero no parece PDF real.");
+    }
+    let src;
+    try {
+      src = await PDFDocument.load(bytes);
+    } catch (e) {
+      throwInvalidPdfError("Portada", docEntry, bytes, `PDFDocument.load falló: ${e?.message || e}`);
+    }
     await addPdfFullPage(outDoc, PDFLib, src);
     return true;
   }
@@ -1041,6 +1049,8 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
       await appendOptionalDocToOutFullPage(outDoc, PDFLib, PDFDocument, portadaEntry);
     } catch (e) {
       console.warn("No se pudo insertar portada:", e);
+      // Si la portada existe pero está corrupta, queremos que el usuario lo sepa claramente:
+      throw e;
     }
   }
 
@@ -1058,14 +1068,19 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
       const docEntry = s?.doc;
       if (!docEntry) throw new Error(`Falta ${ins.label}`);
 
-      let bytes = await entryToBytes(docEntry);
+      const bytes = await entryToBytes(docEntry);
       if (!bytes) throw new Error(`No se pudo leer: ${ins.label}`);
 
-      // ✅ D: compresión fallback para PDFs pesados (antes del merge)
-      bytes = await maybeCompressPdfForEntrega(bytes, docEntry);
-
       if (isPdfEntry(docEntry)) {
-        const src = await PDFDocument.load(bytes);
+        if (!looksLikePdfBytes(bytes)) {
+          throwInvalidPdfError(ins.label, docEntry, bytes);
+        }
+        let src;
+        try {
+          src = await PDFDocument.load(bytes);
+        } catch (e) {
+          throwInvalidPdfError(ins.label, docEntry, bytes, `PDFDocument.load falló: ${e?.message || e}`);
+        }
         await addPdfKeepOrientationSameWidth(outDoc, PDFLib, src);
       } else {
         // Imagen -> convertir a JPG para compresión
@@ -1082,11 +1097,26 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
       loader?.set?.(step, "Insertando: Ruta Crítica…");
       step += 6;
 
-      // Import lazy (para evitar romper inicial)
       const mod = await import("../services/rutaCriticaPreview.js");
       if (!mod?.exportarRutaCriticaPdfBytes) throw new Error("No se encontró exportarRutaCriticaPdfBytes()");
       const rutaBytes = await mod.exportarRutaCriticaPdfBytes();
-      const src = await PDFDocument.load(rutaBytes);
+
+      if (!looksLikePdfBytes(rutaBytes)) {
+        throwInvalidPdfError("Ruta Crítica (sistema)", { fileName: "Ruta Crítica (sistema)" }, rutaBytes);
+      }
+
+      let src;
+      try {
+        src = await PDFDocument.load(rutaBytes);
+      } catch (e) {
+        throwInvalidPdfError(
+          "Ruta Crítica (sistema)",
+          { fileName: "Ruta Crítica (sistema)" },
+          rutaBytes,
+          `PDFDocument.load falló: ${e?.message || e}`
+        );
+      }
+
       await addPdfKeepOrientationSameWidth(outDoc, PDFLib, src);
       continue;
     }
@@ -1107,7 +1137,22 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
       }
 
       if (pptoBytes) {
-        const src = await PDFDocument.load(pptoBytes);
+        if (!looksLikePdfBytes(pptoBytes)) {
+          throwInvalidPdfError("Presupuesto (sistema)", { fileName: "Presupuesto (sistema)" }, pptoBytes);
+        }
+
+        let src;
+        try {
+          src = await PDFDocument.load(pptoBytes);
+        } catch (e) {
+          throwInvalidPdfError(
+            "Presupuesto (sistema)",
+            { fileName: "Presupuesto (sistema)" },
+            pptoBytes,
+            `PDFDocument.load falló: ${e?.message || e}`
+          );
+        }
+
         await addPdfKeepOrientationSameWidth(outDoc, PDFLib, src);
       } else {
         // Placeholder claro si no hay bytes
@@ -1134,6 +1179,8 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
           await appendOptionalDocToOut(outDoc, PDFLib, PDFDocument, respaldoEntry);
         } catch (e) {
           console.warn("No se pudo anexar respaldo_presupuesto_cartas_cotizaciones:", e);
+          // Si existe pero está corrupto, mejor avisar claramente:
+          throw e;
         }
       }
 

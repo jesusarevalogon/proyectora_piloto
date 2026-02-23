@@ -398,7 +398,7 @@ function buildResumenHTML(summaryEtapas, opts = {}) {
   const css = `
     .resumen-wrap{
       margin: 0 auto;
-      max-width: 740px;
+      max-width: 920px;
       border: 1px solid ${COLORS.resumen.border};
       border-radius: 10px;
       overflow: hidden;
@@ -1651,3 +1651,4 @@ async function htmlToPdfBytes(html) {
     } catch {}
   }
 }
+

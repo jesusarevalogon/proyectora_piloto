@@ -398,7 +398,7 @@ function buildResumenHTML(summaryEtapas, opts = {}) {
   const css = `
     .resumen-wrap{
       margin: 0 auto;
-      max-width: 920px;
+      max-width: 740px;
       border: 1px solid ${COLORS.resumen.border};
       border-radius: 10px;
       overflow: hidden;
@@ -1656,4 +1656,3 @@ addCanvasFit(pdf, resumenCanvas, {
     } catch {}
   }
 }
-

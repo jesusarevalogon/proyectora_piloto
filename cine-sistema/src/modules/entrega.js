@@ -30,6 +30,11 @@
 
    ✅ NUEVO (PUNTO 1 SOLICITADO):
    - La portada, si existe, se inserta FULL PAGE (sin márgenes, escalando a hoja completa).
+
+   ✅ NUEVO (AJUSTE QUIRÚRGICO - PASO 3 / D):
+   - Fallback al armar Entrega:
+     * Si un PDF viene pesado (>= 4MB), se comprime on-the-fly antes de hacer merge:
+       pdf.js -> rasterizar -> reconstruir PDF (pdf-lib)
 ========================================================= */
 
 import { supabase } from "../services/supabase.js";
@@ -42,6 +47,9 @@ const MAX_BYTES = Infinity;
 // ✅ Soft limit solo para mensaje (no bloquea)
 const SOFT_LIMIT_MB = 50;
 const SOFT_LIMIT_BYTES = SOFT_LIMIT_MB * 1024 * 1024;
+
+// ✅ Umbral para compresión fallback (solo para PDFs)
+const PDF_COMPRESS_THRESHOLD_BYTES = 4 * 1024 * 1024;
 
 const norm = (s) =>
   (s ?? "")
@@ -819,6 +827,27 @@ function isJpgEntry(docEntry) {
 }
 
 /* =========================================================
+   ✅ NUEVO (D): Compresión fallback "on the fly" para PDFs pesados
+========================================================= */
+
+async function maybeCompressPdfForEntrega(bytes, docEntry) {
+  try {
+    if (!bytes || !(bytes instanceof Uint8Array)) return bytes;
+    if (!isPdfEntry(docEntry)) return bytes;
+    if (bytes.byteLength < PDF_COMPRESS_THRESHOLD_BYTES) return bytes;
+
+    const mod = await import("../services/pdfCompressService.js");
+    const fn = mod?.maybeCompressPdfBytes;
+    if (typeof fn !== "function") return bytes;
+
+    return await fn(bytes, { thresholdMB: 4, dpi: 140, quality: 0.72 });
+  } catch (e) {
+    console.warn("Compresión PDF (fallback Entrega) falló, se deja original:", e);
+    return bytes;
+  }
+}
+
+/* =========================================================
    PDF assembly (mantener orientación + mismo ancho visual)
 ========================================================= */
 
@@ -835,8 +864,6 @@ function getA4ForOrientation(w, h) {
 }
 
 async function addPdfKeepOrientationSameWidth(outDoc, PDFLib, srcDoc) {
-  const { PDFDocument } = PDFLib;
-
   const pages = srcDoc.getPages();
   for (let i = 0; i < pages.length; i++) {
     const p = pages[i];
@@ -949,8 +976,11 @@ async function addImageFullPage(outDoc, imgEmbed) {
    ✅ NUEVO (quirúrgico): helper para insertar doc opcional
 ========================================================= */
 async function appendOptionalDocToOut(outDoc, PDFLib, PDFDocument, docEntry) {
-  const bytes = await entryToBytes(docEntry);
+  let bytes = await entryToBytes(docEntry);
   if (!bytes) return false;
+
+  // ✅ D: compresión fallback para PDFs pesados
+  bytes = await maybeCompressPdfForEntrega(bytes, docEntry);
 
   // PDF
   if (isPdfEntry(docEntry)) {
@@ -975,8 +1005,11 @@ async function appendOptionalDocToOut(outDoc, PDFLib, PDFDocument, docEntry) {
 
 // ✅ Portada: FULL PAGE
 async function appendOptionalDocToOutFullPage(outDoc, PDFLib, PDFDocument, docEntry) {
-  const bytes = await entryToBytes(docEntry);
+  let bytes = await entryToBytes(docEntry);
   if (!bytes) return false;
+
+  // ✅ D: compresión fallback para PDFs pesados
+  bytes = await maybeCompressPdfForEntrega(bytes, docEntry);
 
   if (isPdfEntry(docEntry)) {
     const src = await PDFDocument.load(bytes);
@@ -1025,8 +1058,11 @@ async function buildEntregaPdfBytes(PDFLib, status, loader) {
       const docEntry = s?.doc;
       if (!docEntry) throw new Error(`Falta ${ins.label}`);
 
-      const bytes = await entryToBytes(docEntry);
+      let bytes = await entryToBytes(docEntry);
       if (!bytes) throw new Error(`No se pudo leer: ${ins.label}`);
+
+      // ✅ D: compresión fallback para PDFs pesados (antes del merge)
+      bytes = await maybeCompressPdfForEntrega(bytes, docEntry);
 
       if (isPdfEntry(docEntry)) {
         const src = await PDFDocument.load(bytes);

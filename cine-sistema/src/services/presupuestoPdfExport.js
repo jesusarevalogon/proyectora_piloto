@@ -1604,8 +1604,12 @@ async function htmlToPdfBytes(html) {
       await doc.fonts?.ready;
     } catch {}
 
-    const resumenEl = doc.querySelector(".pdf-resumen");
-    const desgloseEl = doc.querySelector(".pdf-desglose");
+// ✅ Capturar SOLO el cuadro del resumen (no el contenedor de página completa)
+const resumenEl =
+  doc.querySelector(".pdf-resumen .resumen-wrap") ||
+  doc.querySelector(".pdf-resumen");
+
+const desgloseEl = doc.querySelector(".pdf-desglose");
 
     if (resumenEl && desgloseEl) {
       const resumenCanvas = await canvasFromElement(resumenEl);
@@ -1613,7 +1617,7 @@ async function htmlToPdfBytes(html) {
 
       const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
 
-      // Página 1 (portrait): darle más área útil para que el resumen se vea más grande
+// Página 1 (portrait): darle más área útil para que el resumen se vea más grande
 addCanvasFit(pdf, resumenCanvas, {
   margin: 12,
   headerExtra: 0,
@@ -1652,5 +1656,3 @@ addCanvasFit(pdf, resumenCanvas, {
     } catch {}
   }
 }
-
-

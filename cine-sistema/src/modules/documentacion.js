@@ -17,6 +17,11 @@
       - En Documentación solo se pueden subir PDFs o Imágenes
       - Si intentan subir otro tipo: bloquear y mostrar alerta
       - Logo mantiene su validación estricta (PNG/JPG/JPEG)
+
+   ✅ NUEVO AJUSTE QUIRÚRGICO (C):
+      - Comprimir PDFs al subir (cliente) cuando son pesados:
+        pdf.js -> rasterizar -> reconstruir PDF (pdf-lib)
+      - Solo aplica a PDFs (NO imágenes, NO logo).
 ========================================================= */
 
 import { loadModuleState, saveModuleState } from "../services/stateService.js";
@@ -731,6 +736,50 @@ export function bindDocumentacionEvents() {
         if (err) throw new Error(err);
       }
 
+      // ✅ NUEVO: Compresión PDF al subir (solo PDFs y solo si son pesados)
+      let fileToUpload = file;
+      let compressMeta = null;
+
+      try {
+        if (docKey !== "logo_proyecto") {
+          const mime = (file?.type || "").toLowerCase();
+          const name = (file?.name || "").toLowerCase();
+          const isPdf = mime === "application/pdf" || name.endsWith(".pdf");
+
+          // Umbral (4MB)
+          const thresholdBytes = 4 * 1024 * 1024;
+          const inBytes = Number(file?.size || 0);
+
+          if (isPdf && inBytes >= thresholdBytes) {
+            const mod = await import("../services/pdfCompressService.js");
+            const { maybeCompressPdfFile } = mod;
+
+            const before = inBytes;
+            const result = await maybeCompressPdfFile(file, {
+              thresholdMB: 4,
+              dpi: 140,
+              quality: 0.72,
+            });
+
+            if (result?.file) fileToUpload = result.file;
+
+            if (result?.compressed) {
+              compressMeta = {
+                compressed: true,
+                sizeBytesOriginal: before,
+                sizeBytesUploaded: Number(result?.outBytes || fileToUpload?.size || before),
+                compressDpi: 140,
+                compressQuality: 0.72,
+              };
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Compresión PDF (upload) falló, se sube original:", e);
+        fileToUpload = file;
+        compressMeta = null;
+      }
+
       // Si ya existe un archivo para este docKey, intenta borrarlo (limpieza)
       const prev = store?.[docKey];
       if (prev?.path) {
@@ -742,24 +791,25 @@ export function bindDocumentacionEvents() {
         }
       }
 
-      const safeName = sanitizeFileName(file.name || "archivo");
+      const safeName = sanitizeFileName(fileToUpload.name || "archivo");
       const ts = Date.now();
       const path = `${userId}/${projectId}/documentacion/${docKey}/${ts}_${safeName}`;
 
       // Upload
-      const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
+      const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, fileToUpload, {
         upsert: true,
-        contentType: file.type || undefined,
+        contentType: fileToUpload.type || undefined,
       });
       if (upErr) throw upErr;
 
       // Guardamos SOLO metadata
       store[docKey] = {
-        fileName: file.name,
-        mime: file.type || guessMimeFromName(file.name),
+        fileName: fileToUpload.name,
+        mime: fileToUpload.type || guessMimeFromName(fileToUpload.name),
         path,
         updatedAt: Date.now(),
         ...(extraMeta || {}),
+        ...(compressMeta || {}),
       };
     }
 

@@ -3,14 +3,16 @@
    Compresión PDF en cliente (pdf.js -> render -> jpg -> pdf-lib)
 
    ✅ FIX CRÍTICO (para que NO truene en producción):
-   - El import anterior de pdf-lib (dist/pdf-lib.min.js) NO expone PDFDocument como export ESM,
-     por eso salía: "Cannot read properties of undefined (reading 'create')".
-   - Ahora carga pdf-lib por ESM (+esm) y tiene fallback a UMD (window.PDFLib).
+   - Carga pdf-lib por ESM (+esm) y fallback a UMD (window.PDFLib).
 
    ✅ Robustez extra:
    - Si canvas.toBlob devuelve null, aborta y regresa original.
    - Si el PDF requiere password / está raro, regresa original.
    - Si algo falla en cualquier punto, regresa original (sin romper Entrega).
+
+   ✅ FIX PESO (evita que suba de tamaño):
+   - Heurística anti-“vectorial”: si el PDF es ligero por página, NO rasteriza.
+     (PDFs de Word/Docs suelen ser livianos; rasterizarlos los hace más pesados)
 ========================================================= */
 
 let _pdfjs = null;
@@ -19,10 +21,8 @@ let _pdfLib = null;
 async function loadPdfJs() {
   if (_pdfjs) return _pdfjs;
 
-  // pdf.js ESM (CDN)
   const pdfjs = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.mjs");
 
-  // Worker ESM
   try {
     pdfjs.GlobalWorkerOptions.workerSrc =
       "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.mjs";
@@ -67,7 +67,6 @@ async function loadPdfLib() {
   // ✅ Opción 1 (preferida): ESM real con exports nombrados
   try {
     const mod = await import("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/+esm");
-    // mod.PDFDocument debe existir aquí
     if (mod && mod.PDFDocument) {
       _pdfLib = mod;
       return _pdfLib;
@@ -123,10 +122,12 @@ async function loadPdfLib() {
 /**
  * @param {Uint8Array} inputBytes
  * @param {Object} opts
- * @param {number} [opts.dpi=140]         DPI objetivo (120–160 recomendado)
- * @param {number} [opts.quality=0.72]    JPEG quality (0.6–0.8 recomendado)
- * @param {number} [opts.maxPages=220]    Guardia para PDFs enormes
- * @param {number} [opts.maxInputMB=60]   No intentamos si excede (por RAM/tiempo)
+ * @param {number} [opts.dpi=140]               DPI objetivo (120–160 recomendado)
+ * @param {number} [opts.quality=0.72]          JPEG quality (0.6–0.8 recomendado)
+ * @param {number} [opts.maxPages=220]          Guardia para PDFs enormes
+ * @param {number} [opts.maxInputMB=60]         No intentamos si excede (por RAM/tiempo)
+ * @param {number} [opts.minMBPerPage=0.35]     Heurística: si MB/página es menor, NO rasteriza (probablemente vectorial)
+ * @param {boolean} [opts.force=false]          Si true, ignora heurística minMBPerPage
  */
 export async function compressPdfBytes(inputBytes, opts = {}) {
   const bytes = inputBytes instanceof Uint8Array ? inputBytes : new Uint8Array(inputBytes || []);
@@ -136,6 +137,8 @@ export async function compressPdfBytes(inputBytes, opts = {}) {
   const quality = Number(opts.quality ?? 0.72);
   const maxPages = Number(opts.maxPages ?? 220);
   const maxInputMB = Number(opts.maxInputMB ?? 60);
+  const minMBPerPage = Number(opts.minMBPerPage ?? 0.35);
+  const force = !!opts.force;
 
   const inputMB = bytes.byteLength / (1024 * 1024);
   if (inputMB > maxInputMB) return bytes;
@@ -153,12 +156,19 @@ export async function compressPdfBytes(inputBytes, opts = {}) {
   try {
     doc = await pdfjs.getDocument({ data: bytes }).promise;
   } catch {
-    // No es PDF válido, o requiere password, o está cifrado raro. No tocamos.
     return bytes;
   }
 
   const numPages = doc?.numPages || 0;
   if (!numPages || numPages > maxPages) return bytes;
+
+  // ✅ Heurística anti-aumento:
+  // PDFs “ligeros por página” suelen ser vectoriales/texto; rasterizarlos los hace más pesados.
+  // Si no forzamos, saltamos rasterización para evitar subir de peso.
+  if (!force) {
+    const mbPerPage = inputMB / Math.max(1, numPages);
+    if (mbPerPage < minMBPerPage) return bytes;
+  }
 
   // Cargar pdf-lib
   let PDFLib;
@@ -169,9 +179,7 @@ export async function compressPdfBytes(inputBytes, opts = {}) {
   }
 
   const PDFDocument = PDFLib?.PDFDocument;
-  if (!PDFDocument || typeof PDFDocument.create !== "function") {
-    return bytes;
-  }
+  if (!PDFDocument || typeof PDFDocument.create !== "function") return bytes;
 
   let outDoc;
   try {
@@ -194,6 +202,7 @@ export async function compressPdfBytes(inputBytes, opts = {}) {
 
       // Render a canvas en alta resolución
       const viewport = page.getViewport({ scale });
+
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.floor(viewport.width));
       canvas.height = Math.max(1, Math.floor(viewport.height));
@@ -250,9 +259,13 @@ export async function compressPdfBytes(inputBytes, opts = {}) {
  * “Maybe compress”: solo si pasa un umbral.
  * @param {Uint8Array} bytes
  * @param {Object} opts
- * @param {number} [opts.thresholdMB=4]   Comprimir si >= thresholdMB
+ * @param {number} [opts.thresholdMB=4]         Comprimir si >= thresholdMB
  * @param {number} [opts.dpi=140]
  * @param {number} [opts.quality=0.72]
+ * @param {number} [opts.maxPages=220]
+ * @param {number} [opts.maxInputMB=60]
+ * @param {number} [opts.minMBPerPage=0.35]
+ * @param {boolean} [opts.force=false]
  */
 export async function maybeCompressPdfBytes(bytes, opts = {}) {
   const thresholdMB = Number(opts.thresholdMB ?? 4);
@@ -260,13 +273,14 @@ export async function maybeCompressPdfBytes(bytes, opts = {}) {
   const mb = u8.byteLength / (1024 * 1024);
   if (mb < thresholdMB) return u8;
 
-  // ✅ Seguridad: si algo falla, regresamos original (no rompemos Entrega)
   try {
     return await compressPdfBytes(u8, {
       dpi: opts.dpi ?? 140,
       quality: opts.quality ?? 0.72,
       maxPages: opts.maxPages ?? 220,
       maxInputMB: opts.maxInputMB ?? 60,
+      minMBPerPage: opts.minMBPerPage ?? 0.35,
+      force: opts.force ?? false,
     });
   } catch {
     return u8;

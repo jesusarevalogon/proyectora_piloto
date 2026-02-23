@@ -20,6 +20,16 @@
    ✅ NUEVO AJUSTE QUIRÚRGICO (SOLICITADO AHORA):
    - En la visualización del PDF/preview debe verse si el gasto es POR DÍA o POR PROYECTO.
      => Se agrega columna "TIPO DE PAGO" (Por día / Por proyecto) en la tabla exportada.
+
+   ✅ NUEVO AJUSTE QUIRÚRGICO (SOLICITADO AHORA):
+   - Genera automáticamente un "RESUMEN DE PRESUPUESTO" a partir del presupuesto desglosado
+     y lo renderiza ANTES del desglose, tanto en preview como en export bytes.
+   - Los subtotales del resumen van dentro de la tabla (por etapa), como el ejemplo.
+
+   ✅ NUEVO (AJUSTE ACTUAL):
+   - En la vista previa, al imprimir (EXPORTAR PDF) debe salir SOLO el RESUMEN en 1 página (portrait)
+     e incluir totales por etapa (ya están dentro de la tabla).
+   - En el PDF FINAL (export bytes) hoja 1: RESUMEN portrait; resto: DESGLOSE landscape.
 ========================================================= */
 
 import { supabase } from "./supabase.js";
@@ -78,6 +88,11 @@ const COLORS = {
   },
   subtotal: { bg: "#46BEC6", fg: "#000000" },
   totalHighlight: { bg: "#00FF00", fg: "#000000" },
+  resumen: {
+    purple: "#5B4A99",
+    purpleSoft: "#D7D2EA",
+    border: "rgba(0,0,0,.22)",
+  },
 };
 
 const norm = (s) =>
@@ -155,7 +170,6 @@ function blobToDataUrl(blob) {
 
 async function getAuthCtx() {
   try {
-    // ✅ App V2 (como en los módulos): window.appState.user.uid + window.appState.profile.projectId
     const userId =
       window?.appState?.user?.uid ||
       window?.appState?.user?.id ||
@@ -172,7 +186,6 @@ async function getAuthCtx() {
 
     if (userId && projectId) return { userId, projectId };
 
-    // ✅ Fallback: auth.getUser() si existe
     if (supabase?.auth?.getUser) {
       const { data } = await supabase.auth.getUser();
       const uid = data?.user?.id || null;
@@ -191,7 +204,7 @@ async function getAuthCtx() {
 }
 
 async function readLogoDataUrlFromDocs() {
-  // 1) Primero: Supabase (project_state -> module_key: "documentacion")
+  // 1) Supabase project_state (documentacion)
   try {
     const { userId, projectId } = await getAuthCtx();
     if (userId && projectId) {
@@ -199,11 +212,9 @@ async function readLogoDataUrlFromDocs() {
       const entry = docState?.logo_proyecto;
 
       if (entry && typeof entry === "object") {
-        // ✅ V1: dataUrl/base64/url
         const dataUrl = entry?.dataUrl || entry?.dataURL || entry?.url || entry?.base64 || null;
         if (typeof dataUrl === "string" && dataUrl.length > 20) return dataUrl;
 
-        // ✅ V2: path en Storage (bucket uploads)
         const path = entry?.path || entry?.storagePath || entry?.storage_path || null;
         if (typeof path === "string" && path.length > 3 && supabase) {
           const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60 * 30);
@@ -220,7 +231,7 @@ async function readLogoDataUrlFromDocs() {
     }
   } catch {}
 
-  // 2) Fallback: localStorage (V1)
+  // 2) localStorage V1
   try {
     const raw = localStorage.getItem(DOCS_LS_KEY);
     if (!raw) return null;
@@ -249,7 +260,6 @@ async function loadImageFromDataUrl(dataUrl) {
 }
 
 function computeLogoDrawSize(imgWpx, imgHpx, maxWpt, maxHpt) {
-  // Conserva proporción. Entrada px, salida pt (relación no importa, solo ratio)
   let w = maxWpt;
   let h = (imgHpx / imgWpx) * w;
   if (h > maxHpt) {
@@ -259,10 +269,6 @@ function computeLogoDrawSize(imgWpx, imgHpx, maxWpt, maxHpt) {
   return { w, h };
 }
 
-/** =========================================================
- *  ✅ QUÍRÚRGICO: inserta logo arriba-derecha
- *  - No tapa contenido: reservamos headerHeight adicional en el margen superior
- *  ========================================================= */
 function stampLogoOnPage(pdf, imgData, logoWpt, logoHpt, opts = {}) {
   const pageW = pdf.internal.pageSize.getWidth();
   const margin = opts.margin ?? 18;
@@ -270,6 +276,252 @@ function stampLogoOnPage(pdf, imgData, logoWpt, logoHpt, opts = {}) {
   const x = pageW - margin - logoWpt;
   const y = margin - topInset;
   pdf.addImage(imgData, opts.format || "PNG", x, Math.max(6, y), logoWpt, logoHpt, undefined, "FAST");
+}
+
+/* =========================================================
+   ✅ RESUMEN DE PRESUPUESTO (por etapas, estilo Excel)
+========================================================= */
+
+function accountToStr(a) {
+  if (a === null || a === undefined) return "";
+  return a.toString().trim();
+}
+
+function tryParseNumber(s) {
+  const n = Number(accountToStr(s).replace(/,/g, "").trim());
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function buildBudgetSummaryEtapasFromRows(rows, opts = {}) {
+  const titulo = (opts.titulo || "").toString();
+
+  const byAccount = new Map(); // accStr -> { account, descripcion, total, etapaKey }
+  let totalGeneral = 0;
+
+  function detectEtapaKeyFromRow(r) {
+    const e = normalizeEtapa(r?.etapa);
+    if (e) return e;
+
+    const acc = tryParseNumber(r?.account ?? r?.numeroCuenta ?? null);
+    if (Number.isFinite(acc)) {
+      if (acc >= 1000 && acc < 2000) return "PREPRODUCCION";
+      if (acc >= 2000 && acc < 3000) return "PRODUCCION";
+      if (acc >= 3000 && acc < 4000) return "POSTPRODUCCION";
+    }
+    return "OTROS";
+  }
+
+  for (const r of rows || []) {
+    const accountRaw =
+      r?.account ?? r?.numeroCuenta ?? r?.cuentaNumero ?? r?.cuenta ?? r?.accountCode ?? null;
+    const accountStr = accountToStr(accountRaw);
+    if (!accountStr) continue;
+
+    const total = Number.isFinite(Number(r?.total)) ? Number(r.total) : 0;
+    totalGeneral += total;
+
+    const existing = byAccount.get(accountStr);
+    if (!existing) {
+      const descripcion = (r?.descripcion || r?.cuentaNombre || "").toString().trim();
+      byAccount.set(accountStr, {
+        account: accountStr,
+        descripcion,
+        total,
+        etapaKey: detectEtapaKeyFromRow(r),
+      });
+    } else {
+      existing.total += total;
+    }
+  }
+
+  const etapaOrder = ["PREPRODUCCION", "PRODUCCION", "POSTPRODUCCION", "OTROS"];
+  const etapaBuckets = new Map(etapaOrder.map((k) => [k, []]));
+
+  for (const v of byAccount.values()) {
+    const k = etapaBuckets.has(v.etapaKey) ? v.etapaKey : "OTROS";
+    etapaBuckets.get(k).push(v);
+  }
+
+  for (const arr of etapaBuckets.values()) {
+    arr.sort((a, b) => {
+      const na = tryParseNumber(a.account);
+      const nb = tryParseNumber(b.account);
+      if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+      return a.account.localeCompare(b.account);
+    });
+  }
+
+  const etapaSubtotals = {};
+  for (const k of etapaOrder) {
+    const subtotal = (etapaBuckets.get(k) || []).reduce((s, x) => s + (Number(x?.total) || 0), 0);
+    etapaSubtotals[k] = Math.round(subtotal * 100) / 100;
+  }
+
+  return {
+    titulo,
+    etapaOrder,
+    etapaBuckets,
+    etapaSubtotals,
+    totalGeneral: Math.round((Number(totalGeneral) || 0) * 100) / 100,
+  };
+}
+
+function buildResumenHTML(summaryEtapas, opts = {}) {
+  const purple = COLORS.resumen.purple;
+  const purpleSoft = COLORS.resumen.purpleSoft;
+
+  const dense = opts.dense !== false; // por defecto denso/delgado
+
+  const header = `
+    <div class="resumen-wrap">
+      <div class="resumen-headbar">${escapeHtml("RESUMEN")}</div>
+      <div class="resumen-titlebar">
+        <div class="resumen-title">Título: ${escapeHtml(summaryEtapas?.titulo || "")}</div>
+      </div>
+      <div class="resumen-softbar"></div>
+
+      <table class="resumen-table">
+        <thead>
+          <tr>
+            <th class="col-account">ACCOUNT</th>
+            <th class="col-desc">DESCRIPCIÓN</th>
+            <th class="col-total">TOTAL PESOS MX</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${renderResumenRowsEtapas(summaryEtapas)}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  const css = `
+    .resumen-wrap{
+      margin: 0 auto;
+      max-width: 740px;
+      border: 1px solid ${COLORS.resumen.border};
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .resumen-headbar{
+      background:${purple};
+      color:#fff;
+      padding:${dense ? "8px 12px" : "12px 14px"};
+      font-weight:900;
+      letter-spacing:.4px;
+      font-size:${dense ? "16px" : "18px"};
+    }
+    .resumen-titlebar{
+      background:${purple};
+      color:#fff;
+      padding:${dense ? "6px 12px" : "12px 14px"};
+      font-size:${dense ? "12.5px" : "15px"};
+      font-style: italic;
+    }
+    .resumen-softbar{
+      background:${purpleSoft};
+      height:${dense ? "12px" : "26px"};
+      border-left:1px solid ${COLORS.resumen.border};
+      border-right:1px solid ${COLORS.resumen.border};
+      border-bottom:1px solid ${COLORS.resumen.border};
+    }
+
+    .resumen-table{
+      width:100%;
+      border-collapse:collapse;
+      margin-top:${dense ? "10px" : "14px"};
+      font-size:${dense ? "10.5px" : "12px"};
+    }
+    .resumen-table th, .resumen-table td{
+      border:1px solid ${COLORS.resumen.border};
+      padding:${dense ? "4px 6px" : "6px 8px"};
+    }
+    .resumen-table th{
+      background:${purple};
+      color:#fff;
+      font-weight:900;
+      text-align:left;
+    }
+    .resumen-table th.col-total{ text-align:right; }
+    .resumen-table td.col-account{
+      width:${dense ? "96px" : "110px"};
+      text-align:center;
+      font-weight:900;
+    }
+    .resumen-table td.col-desc{ width:auto; }
+    .resumen-table td.col-total{
+      width:${dense ? "170px" : "200px"};
+      text-align:right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .resumen-subtotal td{
+      background:${purple};
+      color:#fff;
+      font-weight:900;
+    }
+    .resumen-subtotal td.col-desc{ text-align:center; }
+
+    .resumen-grand td{
+      background:${purple};
+      color:#fff;
+      font-weight:900;
+      font-size:${dense ? "11px" : "13px"};
+    }
+    .resumen-grand td.col-desc{ text-align:center; }
+  `;
+
+  return { header, css };
+}
+
+function renderResumenRowsEtapas(summaryEtapas) {
+  const etapaOrder = Array.isArray(summaryEtapas?.etapaOrder) ? summaryEtapas.etapaOrder : [];
+  const etapaBuckets = summaryEtapas?.etapaBuckets;
+  const subtotals = summaryEtapas?.etapaSubtotals || {};
+  const parts = [];
+
+  function labelEtapaResumen(k) {
+    if (k === "PREPRODUCCION") return "Total Preproduccion";
+    if (k === "PRODUCCION") return "Total Producción";
+    if (k === "POSTPRODUCCION") return "Total Post Producción";
+    return "Total Otros";
+  }
+
+  for (const k of etapaOrder) {
+    const arr = etapaBuckets?.get ? etapaBuckets.get(k) || [] : [];
+    for (const r of arr) {
+      parts.push(`
+        <tr>
+          <td class="col-account">${escapeHtml(r.account)}</td>
+          <td class="col-desc">${escapeHtml(r.descripcion || "")}</td>
+          <td class="col-total">${money(r.total)}</td>
+        </tr>
+      `);
+    }
+
+    const st = Number(subtotals?.[k] || 0);
+    if (arr.length || st) {
+      parts.push(`
+        <tr class="resumen-subtotal">
+          <td class="col-account"></td>
+          <td class="col-desc">${escapeHtml(labelEtapaResumen(k))}</td>
+          <td class="col-total">${money(st)}</td>
+        </tr>
+      `);
+    }
+  }
+
+  parts.push(`
+    <tr class="resumen-grand">
+      <td class="col-account"></td>
+      <td class="col-desc">TOTAL EN PESOS MEXICANOS</td>
+      <td class="col-total">${money(summaryEtapas?.totalGeneral || 0)}</td>
+    </tr>
+  `);
+
+  return parts.join("");
 }
 
 // ✅ leer desde servidor (project_state) cuando Presupuesto ya no vive en localStorage (V2)
@@ -282,11 +534,12 @@ async function readItemsFromServerState() {
     const arr = Array.isArray(state?.items) ? state.items : [];
     if (!arr.length) return [];
 
-    // Normaliza al mismo shape que el lector DOM/LS
     const items = arr.map((it, i) => {
       const etapa = normalizeEtapa(it?.etapa);
       const concepto = (it?.concepto || "").toString().trim();
       const cuentaNombre = (it?.cuenta || it?.cuentaNombre || "").toString().trim();
+
+      const account = it?.account ?? it?.accountCode ?? it?.numeroCuenta ?? it?.cuentaNumero ?? null;
 
       const entidadRaw = (it?.entidad || "").toString().trim().toUpperCase();
       const entidad =
@@ -310,14 +563,27 @@ async function readItemsFromServerState() {
         return { __error: `Registro #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
       }
 
-      return { etapa, concepto, cuentaNombre, entidad, forma, tipo, monto, cantidad, plazo, subtotal, iva, total };
+      return {
+        etapa,
+        concepto,
+        cuentaNombre,
+        account,
+        entidad,
+        forma,
+        tipo,
+        monto,
+        cantidad,
+        plazo,
+        subtotal,
+        iva,
+        total,
+      };
     });
 
     const errors = items.filter((x) => x && x.__error).map((x) => x.__error);
     if (errors.length) throw new Error(errors.join("\n"));
     return items;
-  } catch (e) {
-    // si falla servidor, devolvemos [] para que caller haga fallback DOM/LS
+  } catch {
     return [];
   }
 }
@@ -339,14 +605,11 @@ function readItemsFromLocalStorage() {
     const concepto = (it?.concepto || "").toString().trim();
     const cuentaNombre = (it?.cuenta || it?.cuentaNombre || "").toString().trim();
 
-    // 🔧 Map quirúrgico para que aporte "PROPIAS" en vez de "INTERNO"
+    const account = it?.account ?? it?.accountCode ?? it?.numeroCuenta ?? it?.cuentaNumero ?? null;
+
     const entidadRaw = (it?.entidad || "").toString().trim().toUpperCase();
     const entidad =
-      entidadRaw === "INTERNO"
-        ? "PROPIAS"
-        : entidadRaw === "PROPIA"
-        ? "PROPIAS"
-        : entidadRaw;
+      entidadRaw === "INTERNO" ? "PROPIAS" : entidadRaw === "PROPIA" ? "PROPIAS" : entidadRaw;
 
     const forma = (it?.formaPago || it?.forma || "").toString().trim().toUpperCase();
     const tipo = (it?.tipoPago || it?.tipo || "").toString().trim().toUpperCase();
@@ -366,7 +629,21 @@ function readItemsFromLocalStorage() {
       return { __error: `Registro #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
     }
 
-    return { etapa, concepto, cuentaNombre, entidad, forma, tipo, monto, cantidad, plazo, subtotal, iva, total };
+    return {
+      etapa,
+      concepto,
+      cuentaNombre,
+      account,
+      entidad,
+      forma,
+      tipo,
+      monto,
+      cantidad,
+      plazo,
+      subtotal,
+      iva,
+      total,
+    };
   });
 
   const errors = items.filter((x) => x && x.__error).map((x) => x.__error);
@@ -388,6 +665,8 @@ function readItemsFromDOM() {
       const concepto = (n.dataset.concepto || "").trim();
       const cuentaNombre = (n.dataset.cuenta || "").trim();
 
+      const account = n.dataset.account || n.dataset.accountCode || n.dataset.numeroCuenta || null;
+
       const entidad = (n.dataset.entidad || "").trim().toUpperCase();
       const forma = (n.dataset.formaDePago || "").trim().toUpperCase();
       const tipo = (n.dataset.tipoDePago || "").trim().toUpperCase();
@@ -407,7 +686,21 @@ function readItemsFromDOM() {
         return { __error: `Registro #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
       }
 
-      return { etapa, concepto, cuentaNombre, entidad, forma, tipo, monto, cantidad, plazo, subtotal, iva, total };
+      return {
+        etapa,
+        concepto,
+        cuentaNombre,
+        account,
+        entidad,
+        forma,
+        tipo,
+        monto,
+        cantidad,
+        plazo,
+        subtotal,
+        iva,
+        total,
+      };
     });
 
     const errorsA = itemsA.filter((x) => x && x.__error).map((x) => x.__error);
@@ -554,7 +847,21 @@ function readItemsFromDOM() {
       return { __error: `Fila #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
     }
 
-    return { etapa, concepto, cuentaNombre, entidad, forma, tipo, monto, cantidad, plazo, subtotal, iva, total };
+    return {
+      etapa,
+      concepto,
+      cuentaNombre,
+      account: null,
+      entidad,
+      forma,
+      tipo,
+      monto,
+      cantidad,
+      plazo,
+      subtotal,
+      iva,
+      total,
+    };
   });
 
   const errorsB = itemsB.filter((x) => x && x.__error).map((x) => x.__error);
@@ -609,7 +916,9 @@ function enrich(items) {
     if (!numeroCuenta) {
       throw new Error(`Cuenta no mapeada: "${it.cuentaNombre}" en etapa ${it.etapa}.`);
     }
-    return { ...it, numeroCuenta };
+
+    const account = it?.account ?? numeroCuenta;
+    return { ...it, numeroCuenta, account };
   });
 
   rows.sort(
@@ -670,17 +979,23 @@ function aportacionesFrom(row) {
 /** =========================
  *  5) HTML imprimible
  *  ========================= */
-// ✅ AJUSTE QUIRÚRGICO: opts.showActions controla el botón "EXPORTAR PDF"
 function buildPrintableHTML(rows, projectName, opts = {}) {
   const showActions = opts.showActions !== false;
+  const splitPages = opts.splitPages === true;
+  const printResumenOnly = opts.printResumenOnly === true;
+const printDesgloseOnly = opts.printDesgloseOnly === true;
 
-  // ✅ NUEVO: etiqueta legible para el tipo de pago
   function labelTipoPago(raw) {
     const t = norm(raw);
     if (t === "DIA" || t === "DÍA") return "Por día";
     if (t === "PROYECTO") return "Por proyecto";
     return raw ? escapeHtml(raw) : "";
   }
+
+  const summaryEtapas = buildBudgetSummaryEtapasFromRows(rows, {
+    titulo: projectName || "Proyecto",
+  });
+  const resumen = buildResumenHTML(summaryEtapas, { dense: true });
 
   const grouped = new Map();
   const etapaTotals = new Map();
@@ -740,7 +1055,6 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 
   const renderEtapaBanner = (etapa) => {
     const c = COLORS.etapa[etapa];
-    // ✅ antes col=14, ahora col=15
     return `<tr class="etapa-banner" style="background:${c.bg}; color:${c.fg};">
       <td colspan="15">${labelEtapa(etapa)}</td>
     </tr>`;
@@ -749,7 +1063,6 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   const renderCuentaGroupRow = (etapa, numeroCuenta, cuentaNombre) => {
     const key = pickCuentaColorKey(etapa);
     const c = COLORS.cuenta[key];
-    // ✅ antes col=13, ahora col=14 (porque ahora hay 15 columnas total)
     return `<tr class="cuenta-group" style="background:${c.bg}; color:${c.fg};">
       <td class="code">${numeroCuenta}</td>
       <td class="desc" colspan="14">${escapeHtml(cuentaNombre)}</td>
@@ -758,7 +1071,6 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 
   const renderSubtotalCuenta = (numeroCuenta, acc) => {
     const c = COLORS.subtotal;
-    // ✅ insertar una celda vacía para TIPO DE PAGO
     return `<tr class="subtotal" style="background:${c.bg}; color:${c.fg};">
       <td class="code"></td>
       <td class="desc">SUBTOTALES SUBCUENTA ${numeroCuenta}</td>
@@ -780,7 +1092,6 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 
   const renderTotalEtapa = (etapa) => {
     const t = etapaTotals.get(etapa);
-    // ✅ antes colspan=4, ahora colspan=5 (desc + tipo + cant + costo + plazo)
     return `<tr class="grand">
       <td class="code"></td>
       <td class="desc" colspan="5">GRAN TOTAL ${labelEtapa(etapa)}</td>
@@ -797,7 +1108,6 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   };
 
   const renderGrandTotal = () => {
-    // ✅ antes colspan=4, ahora colspan=5
     return `<tr class="grand grand-final">
       <td class="code"></td>
       <td class="desc" colspan="5">GRAN TOTAL</td>
@@ -935,15 +1245,44 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   .grand-final td { background: #FFD89C; }
 
   tr { break-inside: avoid; }
+
+  /* ✅ Separación para export bytes (cuando splitPages) */
+  .pdf-resumen{ page-break-after: always; break-after: page; }
+
+  /* ✅ RESUMEN CSS */
+  ${resumen.css}
+
+  /* ✅ Print (preview): imprimir solo RESUMEN, 1 página portrait */
+@media print {
+  ${printResumenOnly ? `
+  @page { size: A4 portrait; margin: 10mm; }
+  .pdf-desglose { display: none !important; }
+  .pdf-resumen { page-break-after: auto !important; break-after: auto !important; }
+  body { background:#fff; }
+  ` : ``}
+
+  ${printDesgloseOnly ? `
+  @page { size: A4 landscape; margin: 8mm; }
+  .pdf-resumen { display: none !important; }
+  body { background:#fff; }
+  ` : ``}
+}
 </style>
 </head>
-<body>
-  ${showActions ? `
+<body class="${printResumenOnly ? "print-resumen-only" : ""}">
+  ${
+    showActions
+      ? `
   <div class="top-actions no-print">
     <button class="btn-export" onclick="window.print()">EXPORTAR PDF</button>
   </div>
-  ` : ``}
+  `
+      : ``
+  }
 
+  ${splitPages ? `<div class="pdf-resumen">${resumen.header}</div>` : resumen.header}
+
+  ${splitPages ? `<div class="pdf-desglose">` : ``}
   <div class="title">PRESUPUESTO DESGLOSADO</div>
   <div class="note">${escapeHtml(projectName || "Proyecto")}</div>
 
@@ -978,6 +1317,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
       ${bodyRows}
     </tbody>
   </table>
+  ${splitPages ? `</div>` : ``}
 </body>
 </html>`;
 
@@ -988,16 +1328,22 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
  *  API pública (vista previa / imprimir)
  *  ========================= */
 export async function exportarPresupuestoPDF() {
-  // ✅ Puede ejecutarse desde Documentación (no hay DOM de Presupuesto).
-  // Primero: servidor (project_state). Si no hay, fallback a DOM/LS.
   let items = await readItemsFromServerState();
 
   if (!items.length) {
-    try { items = readItemsFromDOM(); } catch { /* ignore */ }
+    try {
+      items = readItemsFromDOM();
+    } catch {
+      /* ignore */
+    }
   }
 
   if (!items.length) {
-    try { items = readItemsFromLocalStorage(); } catch { items = []; }
+    try {
+      items = readItemsFromLocalStorage();
+    } catch {
+      items = [];
+    }
   }
 
   if (!items.length) throw new Error("No hay partidas de Presupuesto para exportar.");
@@ -1007,11 +1353,30 @@ export async function exportarPresupuestoPDF() {
   const projectName =
     window?.appState?.project?.name ||
     window?.appState?.profile?.projectName ||
+    window?.appState?.project?.title ||
+    window?.appState?.profile?.projectTitle ||
     document.querySelector("[data-project-name]")?.getAttribute("data-project-name") ||
     "Proyecto";
 
-  // ✅ Vista previa: con botón
-  const printable = buildPrintableHTML(rows, projectName, { showActions: true });
+  // ✅ Vista previa: elegir qué quieres ver/exportar
+  // 1 = Resumen (1 hoja)
+  // 2 = Desglose (todas)
+  // 3 = Ambos (resumen + desglose)
+  const choiceRaw = window.prompt(
+    "Vista previa de Presupuesto:\n1) Resumen\n2) Desglose\n3) Ambos\n\nEscribe 1, 2 o 3:",
+    "3"
+  );
+
+  const choice = (choiceRaw || "3").trim();
+
+  const opts =
+    choice === "1"
+      ? { showActions: true, splitPages: true, printResumenOnly: true }
+      : choice === "2"
+      ? { showActions: true, splitPages: true, printDesgloseOnly: true }
+      : { showActions: true, splitPages: true };
+
+  const printable = buildPrintableHTML(rows, projectName, opts);
 
   const w = window.open("", "_blank");
   if (!w) throw new Error("Popup bloqueado. Permite popups para esta página.");
@@ -1026,8 +1391,6 @@ export async function exportarPresupuestoPDF() {
  *  - Entrega lo usa para anexar el Presupuesto (8)
  *  ========================================================= */
 export async function exportarPresupuestoPdfBytes({ projectName } = {}) {
-  // ✅ V2: desde Entrega NO existe el DOM del módulo Presupuesto.
-  // Intentamos primero servidor (project_state). Si no hay, fallback a DOM/LS.
   let items = await readItemsFromServerState();
 
   if (!items.length) {
@@ -1056,19 +1419,20 @@ export async function exportarPresupuestoPdfBytes({ projectName } = {}) {
     projectName ||
     window?.appState?.project?.name ||
     window?.appState?.profile?.projectName ||
+    window?.appState?.project?.title ||
+    window?.appState?.profile?.projectTitle ||
     document.querySelector("[data-project-name]")?.getAttribute("data-project-name") ||
     "Proyecto";
 
-  // ✅ Export final: sin botón
-  const html = buildPrintableHTML(rows, pName, { showActions: false });
+  // ✅ Export final: sin botón + resumen en portrait separado
+  const html = buildPrintableHTML(rows, pName, { showActions: false, splitPages: true });
   return await htmlToPdfBytes(html);
 }
 
 /* =========================================================
    HTML -> PDF bytes (html2canvas + jsPDF)
    - renderiza el HTML en un iframe oculto
-   - genera páginas A4 landscape
-   ✅ V2: si hay logo, lo estampa en cada página (arriba derecha)
+   ✅ si hay .pdf-resumen y .pdf-desglose => resumen portrait + desglose landscape
 ========================================================= */
 
 async function htmlToPdfBytes(html) {
@@ -1079,14 +1443,12 @@ async function htmlToPdfBytes(html) {
 
   const jsPDF = jsPdfMod.jsPDF || jsPdfMod.default?.jsPDF || jsPdfMod.default || jsPdfMod;
 
-  // ✅ V2: preparar logo (si existe) — ahora es async
   const logoDataUrl = await readLogoDataUrlFromDocs();
-  let logoStamp = null; // { imgData, wpt, hpt, headerExtra, format }
+  let logoStamp = null;
   if (logoDataUrl) {
     try {
       const img = await loadImageFromDataUrl(logoDataUrl);
 
-      // Tamaño “decente” para A4 landscape (pt)
       const maxWpt = 140;
       const maxHpt = 38;
 
@@ -1100,14 +1462,13 @@ async function htmlToPdfBytes(html) {
       const mime = dataUrlMime(logoDataUrl);
       const format = mime.includes("jpeg") || mime.includes("jpg") ? "JPEG" : "PNG";
 
-      const headerExtra = h + 12; // margen extra superior reservado para no tapar contenido
+      const headerExtra = h + 12;
       logoStamp = { imgData: logoDataUrl, wpt: w, hpt: h, headerExtra, format };
     } catch {
       logoStamp = null;
     }
   }
 
-  // iframe oculto (sandbox seguro)
   const iframe = document.createElement("iframe");
   iframe.style.position = "fixed";
   iframe.style.left = "-99999px";
@@ -1120,34 +1481,64 @@ async function htmlToPdfBytes(html) {
 
   const doc = iframe.contentDocument;
 
-  try {
-    doc.open();
-    doc.write(html);
-    doc.close();
+  function getBodyBox(el) {
+    const r = el.getBoundingClientRect();
+    return { w: Math.max(1, Math.ceil(r.width)), h: Math.max(1, Math.ceil(r.height)) };
+  }
 
-    // espera a que pinte
-    await new Promise((r) => setTimeout(r, 250));
-    try {
-      await doc.fonts?.ready;
-    } catch {}
-
-    const target = doc.body;
-
-    const canvas = await html2canvas(target, {
+  async function canvasFromElement(el) {
+    const box = getBodyBox(el);
+    return await html2canvas(el, {
       backgroundColor: "#ffffff",
       scale: 2,
       useCORS: true,
-      windowWidth: target.scrollWidth,
-      windowHeight: target.scrollHeight,
+      windowWidth: box.w,
+      windowHeight: box.h,
+      scrollX: 0,
+      scrollY: 0,
     });
+  }
 
-    // A4 landscape en puntos
-    const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  function addCanvasFit(pdf, canvas, pageOpts = {}) {
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
 
-    const margin = 18;
-    const headerExtra = logoStamp ? logoStamp.headerExtra : 0;
+    const margin = pageOpts.margin ?? 18;
+    const headerExtra = pageOpts.headerExtra ?? 0;
+
+    const usableW = pageWidth - margin * 2;
+    const usableH = pageHeight - margin * 2 - headerExtra;
+
+    let scale = usableW / canvas.width;
+    let imgH = canvas.height * scale;
+    if (imgH > usableH) {
+      scale = usableH / canvas.height;
+      imgH = usableH;
+    }
+    const imgW = canvas.width * scale;
+
+    const x = margin + (usableW - imgW) / 2;
+    const y = margin + headerExtra;
+
+    const imgData = canvas.toDataURL("image/jpeg", 0.92);
+    pdf.addImage(imgData, "JPEG", x, y, imgW, imgH, undefined, "FAST");
+
+    if (logoStamp) {
+      stampLogoOnPage(pdf, logoStamp.imgData, logoStamp.wpt, logoStamp.hpt, {
+        margin,
+        topInset: 8,
+        format: logoStamp.format,
+      });
+    }
+  }
+
+  function addCanvasSliced(pdf, canvas, pageOpts = {}) {
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+
+    const margin = pageOpts.margin ?? 18;
+    const headerExtra = pageOpts.headerExtra ?? 0;
+
     const usableW = pageWidth - margin * 2;
     const usableH = pageHeight - margin * 2 - headerExtra;
 
@@ -1165,41 +1556,92 @@ async function htmlToPdfBytes(html) {
           format: logoStamp.format,
         });
       }
-    } else {
-      const sliceCanvas = document.createElement("canvas");
-      const sliceCtx = sliceCanvas.getContext("2d");
-
-      const slicePxH = Math.floor(usableH / scale);
-
-      let y = 0;
-      let pageIndex = 0;
-
-      while (y < canvas.height) {
-        const h = Math.min(slicePxH, canvas.height - y);
-
-        sliceCanvas.width = canvas.width;
-        sliceCanvas.height = h;
-
-        sliceCtx.clearRect(0, 0, sliceCanvas.width, sliceCanvas.height);
-        sliceCtx.drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
-
-        const imgData = sliceCanvas.toDataURL("image/jpeg", 0.92);
-
-        if (pageIndex > 0) pdf.addPage();
-        pdf.addImage(imgData, "JPEG", margin, margin + headerExtra, usableW, h * scale, undefined, "FAST");
-
-        if (logoStamp) {
-          stampLogoOnPage(pdf, logoStamp.imgData, logoStamp.wpt, logoStamp.hpt, {
-            margin,
-            topInset: 8,
-            format: logoStamp.format,
-          });
-        }
-
-        y += h;
-        pageIndex++;
-      }
+      return;
     }
+
+    const sliceCanvas = document.createElement("canvas");
+    const sliceCtx = sliceCanvas.getContext("2d");
+
+    const slicePxH = Math.floor(usableH / scale);
+
+    let y = 0;
+    let pageIndex = 0;
+
+    while (y < canvas.height) {
+      const h = Math.min(slicePxH, canvas.height - y);
+
+      sliceCanvas.width = canvas.width;
+      sliceCanvas.height = h;
+
+      sliceCtx.clearRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+      sliceCtx.drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
+
+      const imgData = sliceCanvas.toDataURL("image/jpeg", 0.92);
+
+      if (pageIndex > 0) pdf.addPage();
+      pdf.addImage(imgData, "JPEG", margin, margin + headerExtra, usableW, h * scale, undefined, "FAST");
+
+      if (logoStamp) {
+        stampLogoOnPage(pdf, logoStamp.imgData, logoStamp.wpt, logoStamp.hpt, {
+          margin,
+          topInset: 8,
+          format: logoStamp.format,
+        });
+      }
+
+      y += h;
+      pageIndex++;
+    }
+  }
+
+  try {
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    await new Promise((r) => setTimeout(r, 250));
+    try {
+      await doc.fonts?.ready;
+    } catch {}
+
+    const resumenEl = doc.querySelector(".pdf-resumen");
+    const desgloseEl = doc.querySelector(".pdf-desglose");
+
+    if (resumenEl && desgloseEl) {
+      const resumenCanvas = await canvasFromElement(resumenEl);
+      const desgloseCanvas = await canvasFromElement(desgloseEl);
+
+      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+
+      addCanvasFit(pdf, resumenCanvas, {
+        margin: 22,
+        headerExtra: logoStamp ? logoStamp.headerExtra : 0,
+      });
+
+      pdf.addPage("a4", "landscape");
+      addCanvasSliced(pdf, desgloseCanvas, {
+        margin: 18,
+        headerExtra: logoStamp ? logoStamp.headerExtra : 0,
+      });
+
+      const buf = pdf.output("arraybuffer");
+      return new Uint8Array(buf);
+    }
+
+    const target = doc.body;
+    const canvas = await html2canvas(target, {
+      backgroundColor: "#ffffff",
+      scale: 2,
+      useCORS: true,
+      windowWidth: target.scrollWidth,
+      windowHeight: target.scrollHeight,
+    });
+
+    const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    addCanvasSliced(pdf, canvas, {
+      margin: 18,
+      headerExtra: logoStamp ? logoStamp.headerExtra : 0,
+    });
 
     const buf = pdf.output("arraybuffer");
     return new Uint8Array(buf);
